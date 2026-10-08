@@ -1,6 +1,50 @@
 # Changelog
 
+## 1.2.0
+
+**The tone now reports a change of indentation rather than a depth.** Reading down a block
+of code at a constant indent is silent; the line that steps in or out of it sounds. Coming
+back to the left margin is a change like any other and sounds the bottom of the ladder;
+staying there is silent after the first line.
+
+### Added
+
+- **Beep only when the indentation changes** — Orca Preferences → User Extensions → Indent
+  Beeper, on by default. Turn it off to beep every line, which is NVDA's behaviour and what
+  1.0.0 and 1.1.0 did.
+
+### Changed
+
+- **Replaces 1.1.0's "Least indentation worth a beep, in spaces"**, which was a
+  misunderstanding of the request and lasted one release. A floor silences shallow
+  indentation permanently; what was wanted was silence for *unchanged* indentation at any
+  depth, including zero. Every depth beeps again, as long as it has changed. The 1.0.0
+  setting "Beep for lines with no indentation" is likewise gone — an unindented line beeps
+  when the indentation changes to zero, and is silent when it has not.
+- **A line with nothing on it changes nothing.** A blank line has no indentation because it
+  has no content, not because the code came back to the margin. Counting it as a change to
+  zero would beep twice for every blank line in a file — once down and once back — and
+  report a structural change that never happened; Orca already says "blank". A line of
+  *only whitespace* is different: that has a real depth, and it beeps.
+- **Typing beeps on every keystroke in the indentation**, because every keystroke there is
+  a change. Backspacing the last space away beeps the bottom of the ladder: there was an
+  indent and now there is not. 1.1.0 had wrongly gone quiet instead.
+- The remembered depth is forgotten — so the next line beeps whatever it is — on switching
+  the beep on with Orca+Ctrl+I, on any settings change (a changed tab width means the
+  remembered depth is not even in the same units), and at the start of a session. The
+  toggle's confirmation tone sounds whatever the last depth was, and deliberately does not
+  claim a depth of its own.
+
+### Tests
+
+- `tests-tones.py` is **95 rows**, all green, including the requested sequence asserted
+  verbatim: two, four, four again, two, zero, zero again, one space → `[2, 4, None, 2, 0,
+  None, 1]`.
+
 ## 1.1.0
+
+Superseded by 1.2.0 within the hour, on the author's correction: a minimum depth was not
+what was wanted. Kept here because the tag exists.
 
 ### Added
 

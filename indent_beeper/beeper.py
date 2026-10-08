@@ -22,7 +22,7 @@ import time
 from orca import speech_presenter
 
 from .config import Config
-from .indent import indentation_units, should_beep, tone_for_config
+from .indent import indentation_units, tone_for_config
 from .player import TonePlayer
 from .tone import render
 
@@ -66,6 +66,14 @@ def _debug(message: str) -> None:
 
 _config: Config | None = None
 _player: TonePlayer | None = None
+
+# The depth the last beep decision was made at, or None for "no idea yet".
+# This is what makes the tone report a *change* rather than a depth: reading
+# down a block at a constant indent is silent, and the line that steps in or
+# out of it sounds. None means the next line beeps whatever its depth, which
+# is what you want after switching the beep on, after a settings change, and
+# on the very first line of a session -- there is nothing to have changed from.
+_last_units: int | None = None
 
 # Rendered tones, keyed on the depth. Cleared whenever a setting that affects
 # the sound changes, which _cache_identity detects without this having to know
@@ -135,13 +143,18 @@ def _tone_for(units: int) -> bytes:
     return pcm
 
 
-def beep_for_line(line: str, source: str = "line", ignore_minimum: bool = False) -> None:
+def beep_for_line(line: str, source: str = "line", force: bool = False) -> None:
     """Sound the tone for a line's indentation. Safe to call for any line.
 
-    ``ignore_minimum`` sounds the tone whatever the depth, which only the
-    toggle's confirmation beep wants: it has to be audible even when the
-    threshold would silence an unindented line.
+    By default the tone reports a *change* of depth: a line indented the same
+    as the one before it is silent. See ``_last_units``.
+
+    ``force`` sounds the tone whatever the depth and then forgets the depth,
+    so the next line beeps too. Only the toggle's confirmation beep wants
+    that -- it has to be audible, and it must not leave the next line silent
+    by having claimed a depth of its own.
     """
+    global _last_units
     if _config is None or _player is None:
         _debug(f"{source}: not running")
         return
@@ -152,10 +165,24 @@ def beep_for_line(line: str, source: str = "line", ignore_minimum: bool = False)
         _debug(f"{source}: no player")
         return
     units = indentation_units(line, _config.tab_units)
-    if not ignore_minimum and not should_beep(units, _config.minimum_units):
-        _debug(f"{source}: units={units} is below the minimum of "
-               f"{_config.minimum_units}, not beeping")
-        return
+    if force:
+        _last_units = None
+    elif _config.beep_on_change_only:
+        if not line:
+            # A line with nothing on it has no indentation because it has no
+            # content, not because the code came back to the margin. Treating
+            # it as a change to zero would beep twice for every blank line in
+            # a file -- once down to the margin and once back -- and report a
+            # structural change that never happened. So leave the remembered
+            # depth alone and say nothing; Orca already says "blank".
+            _debug(f"{source}: an empty line is not a change of indentation")
+            return
+        if units == _last_units:
+            _debug(f"{source}: units={units} unchanged, not beeping")
+            return
+        _last_units = units
+    else:
+        _last_units = units
     # Re-read the speech volume per beep rather than caching it: Orca's volume
     # keys change it live, and a beep that stayed loud after the voice was
     # turned down would be the first thing anyone complained about.
@@ -181,6 +208,7 @@ def beep_for_typed_indent(obj, changed_text: str) -> None:
     so it tracks what you have actually typed: hold space down and the tone
     climbs a step per press, backspace it away and it comes back down.
     """
+    global _last_units
     if _config is None or not _config.enabled or not _config.beep_while_typing:
         return
     if not changed_text or changed_text.strip(" \t\u00a0"):
@@ -203,12 +231,14 @@ def beep_for_typed_indent(obj, changed_text: str) -> None:
         _debug(f"typing: caret is past the indentation, not beeping")
         return
     units = indentation_units(prefix, _config.tab_units)
-    if not should_beep(units, _config.minimum_units):
-        # Backspacing out of the indentation goes quiet rather than reporting
-        # its way down to the margin, which matches what reading a line does.
-        _debug(f"typing: units={units} is below the minimum of "
-               f"{_config.minimum_units}, not beeping")
+    if _config.beep_on_change_only and units == _last_units:
+        _debug(f"typing: units={units} unchanged, not beeping")
         return
+    # Every keystroke in the indentation changes its depth, so typing beeps
+    # on all of them either way -- including backspacing the last space away,
+    # which is a change to zero and sounds the bottom of the ladder. Unlike a
+    # blank line, that zero is real: there was an indent and now there is not.
+    _last_units = units
     _apply_volume()
     frequency, duration = tone_for_config(units, _config)
     result = _player.play(_tone_for(units)) if _player is not None else "no-player"
@@ -218,10 +248,11 @@ def beep_for_typed_indent(obj, changed_text: str) -> None:
 
 def install(config: Config) -> None:
     """Start beeping. Must be called from the main thread."""
-    global _config, _player
+    global _config, _player, _last_units
     if _patched:
         return
     _config = config
+    _last_units = None
     _player = TonePlayer()
     if not _player.available:
         _log.warning("IndentBeeper: no audio output; the beep will be silent.")
@@ -300,8 +331,9 @@ def install(config: Config) -> None:
 
 def uninstall() -> None:
     """Stop beeping and close the audio stream."""
-    global _config, _player, _cache_identity
+    global _config, _player, _cache_identity, _last_units
     _unpatch_all()
+    _last_units = None
     if _player is not None:
         _player.shutdown()
     _player = None
@@ -313,9 +345,14 @@ def uninstall() -> None:
 
 def settings_changed() -> None:
     """Re-read settings. Driven off Orca's own change signal."""
+    global _last_units
     if _config is None:
         return
     _config.reload()
+    # The remembered depth was measured under the old settings -- a changed
+    # tab width means it is not even in the same units -- so forget it and let
+    # the next line beep.
+    _last_units = None
     _apply_volume()
     _log.info("IndentBeeper: settings changed (enabled=%s, %d Hz base, "
               "%d steps/octave, %d octaves, tab=%d)",
@@ -337,5 +374,5 @@ def toggle() -> bool:
     # A tone straight after the announcement, so turning it on tells you what
     # "no indent" sounds like and you have a reference for the next line.
     if _config.enabled:
-        beep_for_line("", source="toggle", ignore_minimum=True)
+        beep_for_line("", source="toggle", force=True)
     return True

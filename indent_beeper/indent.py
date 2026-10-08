@@ -24,7 +24,6 @@ from .config import (
     DEFAULT_BASE_FREQUENCY,
     DEFAULT_FADE_MS,
     DEFAULT_MAX_DURATION_MS,
-    DEFAULT_MINIMUM_UNITS,
     DEFAULT_OCTAVES,
     DEFAULT_RUN_EXTRA_MS,
     DEFAULT_STEPS_PER_OCTAVE,
@@ -49,17 +48,6 @@ def indentation_units(line: str, tab_units: int = DEFAULT_TAB_UNITS) -> int:
         return 0
     leading = _LEADING_WHITESPACE.match(line.replace(" ", " ")).group()
     return sum(tab_units if char == "\t" else 1 for char in leading)
-
-
-def should_beep(units: int, minimum_units: int = DEFAULT_MINIMUM_UNITS) -> bool:
-    """Is this line indented enough to be worth a tone?
-
-    Below the threshold there is no beep at all. The default threshold is two,
-    so the left margin and a single stray space are both silent: a tone on
-    every line of a paragraph says nothing, and an ear soon stops hearing it.
-    A threshold of 0 sounds every line, including unindented ones.
-    """
-    return units >= max(0, minimum_units)
 
 
 def steps_per_run(
@@ -116,7 +104,6 @@ __all__ = [
     "DEFAULT_FADE_MS",
     "describe",
     "indentation_units",
-    "should_beep",
     "steps_per_run",
     "tone_for_config",
     "tone_for_units",

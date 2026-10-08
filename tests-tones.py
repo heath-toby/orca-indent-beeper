@@ -240,9 +240,9 @@ AXText.get_line_at_offset = staticmethod(lambda o, off: (o.text, 0, len(o.text))
 
 played = []
 B._config = cfg.Config.load(Settings())
-# The rows below exercise the pitch ladder at depths of 0 and 1, which the
-# default threshold of 2 would silence. The threshold has its own block.
-B._config.minimum_units = 0
+# The rows below exercise the pitch ladder and repeat depths freely, which
+# change detection would silence. Change detection has its own block.
+B._config.beep_on_change_only = False
 B._cache.clear()
 B._cache_identity = None
 
@@ -292,82 +292,111 @@ B._config.enabled = False
 check("the master toggle silences typing too", typed("  ", 2, " "), None)
 B._config.enabled = True
 
-# --- the minimum depth worth a beep ---------------------------------------
-# Reading prose means every line sits at the left margin, and a tone on every
-# one of them says nothing. The threshold is what buys that silence back: by
-# default nothing under two rungs beeps, so the margin and a single stray
-# space are both quiet while a tab still sounds.
+# --- the tone reports a CHANGE of indentation, not a depth ----------------
+# Toby's specification, verbatim: "if I go from one line with two spaces to a
+# line with four, I hear the sound for four spaces. But if I then stay on 4
+# spaces, I hear nothing. When 4 becomes 2, I hear the 2 spaces sound. Then
+# when two becomes 0, I hear the zero spaces sound. If we then stay on zero
+# spaces, no noise. When zero becomes 1 again, we get the sound for 1 space."
 
-check("the default threshold is more than one space", cfg.DEFAULT_MINIMUM_UNITS, 2)
-check("the margin is below the default threshold", indent.should_beep(0), False)
-check("one space is below it too", indent.should_beep(1), False)
-check("two spaces reach it", indent.should_beep(2), True)
-check("a tab clears it", indent.should_beep(indent.indentation_units("\tx")), True)
-check("a threshold of zero sounds the margin", indent.should_beep(0, 0), True)
-check("a threshold of one keeps the margin quiet but sounds one space",
-      (indent.should_beep(0, 1), indent.should_beep(1, 1)), (False, True))
-check("a negative threshold cannot silence anything",
-      indent.should_beep(0, -5), True)
-check("a high threshold holds out until it is reached",
-      [indent.should_beep(n, 8) for n in (0, 7, 8, 9)],
-      [False, False, True, True])
+check("beeping on change only is the default", cfg.DEFAULT_BEEP_ON_CHANGE_ONLY, True)
 
-# The same gate on the real read path, which is what moving by line hits.
-line_played = []
 B._player = FakePlayer()
-B._player.play = lambda pcm: (line_played.append(len(pcm)), "ok")[1]
+B._config = cfg.Config.load(Settings())
 
 
-def read(line, minimum=None):
-    """True if reading `line` sounded a tone."""
-    if minimum is not None:
-        B._config.minimum_units = minimum
-    line_played.clear()
+def read(line):
+    """The depth beeped for reading `line`, or None if it was silent."""
+    played.clear()
     B.beep_for_line(line, source="test")
-    return bool(line_played)
+    if not played:
+        return None
+    for units in range(0, 400):
+        if len(B._tone_for(units)) == played[0]:
+            return units
+    return "?"
 
 
-check("reading an unindented line is silent at the default", read("hello", 2), False)
-check("reading a one-space line is silent too", read(" hello"), False)
-check("reading a two-space line beeps", read("  hello"), True)
-check("reading a tabbed line beeps", read("\thello"), True)
-check("a blank line at the margin stays silent", read(""), False)
-check("staying at the margin never beeps, however many lines",
-      [read(text) for text in ("one", "two", "three", "")], [False] * 4)
-check("returning to the margin from a depth goes quiet",
-      [read("        deep"), read("    less"), read("back")],
-      [True, True, False])
-check("a threshold of zero sounds every line again",
-      [read("x", 0), read(" x"), read("  x")], [True, True, True])
-B._config.minimum_units = 2
+def read_all(*lines):
+    return [read(line) for line in lines]
 
-# The toggle's confirmation beep has to be audible whatever the threshold,
-# or switching the add-on on would be silent and indistinguishable from
-# switching it off.
-line_played.clear()
-B.beep_for_line("", source="toggle", ignore_minimum=True)
-check("the toggle confirmation beeps through the threshold", bool(line_played), True)
 
-# An install that had turned the old boolean off wanted the margin quiet, so
-# it keeps that rather than being handed the new default.
-check("the setting it replaced is carried across",
-      cfg.Config.load(Settings(**{"beep-on-no-indent": False})).minimum_units, 1)
-check("leaving the old setting on gives the new default",
-      cfg.Config.load(Settings(**{"beep-on-no-indent": True})).minimum_units,
-      cfg.DEFAULT_MINIMUM_UNITS)
-check("a stored threshold wins over the setting it replaced",
-      cfg.Config.load(Settings(**{"beep-on-no-indent": False,
-                                  "minimum-units": 6})).minimum_units, 6)
-check("a fresh install gets the new default",
-      cfg.Config.load(Settings()).minimum_units, cfg.DEFAULT_MINIMUM_UNITS)
-check("an out-of-range threshold is clamped",
-      cfg.Config.load(Settings(**{"minimum-units": 999})).minimum_units,
-      cfg.MINIMUM_UNITS_MAX)
-check("a negative stored threshold is clamped to zero",
-      cfg.Config.load(Settings(**{"minimum-units": -4})).minimum_units, 0)
+B._last_units = None
+check("his sequence, exactly as described",
+      read_all("  two", "    four", "    four again", "  two", "zero", "zero again", " one"),
+      [2, 4, None, 2, 0, None, 1])
+
+# Each half of it on its own, so a failure says which rule broke.
+B._last_units = None
+check("the first line read always beeps", read("    x"), 4)
+check("the same depth twice is silent", read("    y"), None)
+check("the same depth many times stays silent",
+      read_all("    a", "    b", "    c"), [None, None, None])
+check("stepping in beeps the new depth", read("        deep"), 8)
+check("stepping out beeps the new depth", read("  shallow"), 2)
+check("coming back to the margin beeps the bottom of the ladder",
+      read("margin"), 0)
+check("staying at the margin is silent, however many lines",
+      read_all("one", "two", "three"), [None, None, None])
+check("leaving the margin beeps again", read(" x"), 1)
+check("one space and two spaces are different depths", read("  x"), 2)
+check("a tab and four spaces are the same depth, so no second beep",
+      read_all("\tx", "    y"), [4, None])
+check("a tab after a tab is silent", read("\tz"), None)
+
+# A blank line has no indentation because it has no content. Counting it as a
+# change to zero would beep twice per blank line -- down to the margin and
+# back -- and report a structural change that never happened.
+B._last_units = None
+check("a blank line between two lines at one depth stays silent throughout",
+      read_all("    def f():", "", "    def g():"), [4, None, None])
+check("a blank line does not hide a real change that follows",
+      read_all("", "        deeper"), [None, 8])
+check("a whitespace-only line has a depth of its own, unlike an empty one",
+      read_all("    ", "        "), [4, 8])
+check("...and an empty line next to it still changes nothing",
+      read_all("", "        "), [None, None])
+
+# Switching the beep on has to be audible whatever the last depth was, and it
+# must not then silence the next line by claiming a depth of its own.
+B._last_units = 4
+played.clear()
+B.beep_for_line("", source="toggle", force=True)
+check("the toggle confirmation always beeps", bool(played), True)
+check("the forced beep forgets the depth", B._last_units, None)
+check("so the line after switching on beeps whatever it is", read("    x"), 4)
+
+# Turning change-only off restores a beep on every line.
+B._config.beep_on_change_only = False
+B._last_units = None
+check("with change-only off, every line beeps",
+      read_all("    a", "    b", "zero", "zero"), [4, 4, 0, 0])
+B._config.beep_on_change_only = True
+
+# Typing is a change on every keystroke by definition, so it beeps on all of
+# them -- including backspacing the last space away, which Toby asked for
+# explicitly: "I want to know every indentation change, including backspacing
+# from one space to zero."
+B._last_units = None
+check("typing climbs a rung per space",
+      [typed(" ", 1, " "), typed("  ", 2, " "), typed("   ", 3, " ")], [1, 2, 3])
+check("backspacing comes back down", typed("  ", 2, " "), 2)
+check("backspacing the last space away beeps zero", typed("", 0, " "), 0)
+check("a second edit that leaves the depth alone is silent",
+      typed("", 0, " "), None)
+check("typing after a read at the same depth is silent",
+      (read("        x"), typed("        ", 8, " ")), (8, None))
+B._last_units = None
+
+# Settings changing invalidates the remembered depth: a different tab width
+# means it is not even in the same units any more.
+B._last_units = 4
+B.settings_changed()
+check("a settings change forgets the depth", B._last_units, None)
 
 B._config = cfg.Config.load(Settings())
-B._config.minimum_units = 0
+B._config.beep_on_change_only = False
+B._last_units = None
 
 # --- the sink must stay synchronised, and the buffers must carry the gaps ---
 # These two rows are the regression for the bug that made the add-on useless:

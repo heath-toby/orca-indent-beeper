@@ -7,7 +7,7 @@ is written inside the package -- the tones are generated into memory -- so
 there is no data directory to keep outside it.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import logging
 
@@ -30,13 +30,13 @@ from .config import (
     BASE_FREQUENCY_MIN,
     DEFAULT_BASE_DURATION_MS,
     DEFAULT_BASE_FREQUENCY,
+    DEFAULT_BEEP_ON_CHANGE_ONLY,
     DEFAULT_BEEP_WHILE_TYPING,
     DEFAULT_DEBUG,
     DEFAULT_ENABLED,
     DEFAULT_FADE_MS,
     DEFAULT_FOLLOW_SPEECH_VOLUME,
     DEFAULT_MAX_DURATION_MS,
-    DEFAULT_MINIMUM_UNITS,
     DEFAULT_OCTAVES,
     DEFAULT_RUN_EXTRA_MS,
     DEFAULT_STEPS_PER_OCTAVE,
@@ -46,8 +46,6 @@ from .config import (
     FADE_MIN,
     MAX_DURATION_MAX,
     MAX_DURATION_MIN,
-    MINIMUM_UNITS_MAX,
-    MINIMUM_UNITS_MIN,
     OCTAVES_MAX,
     OCTAVES_MIN,
     RUN_EXTRA_MAX,
@@ -80,7 +78,7 @@ class IndentBeeper(Extension):
         "space of indentation and four for every tab, so the depth of a line "
         "is heard rather than counted out."
     )
-    VERSION = "1.1.0"  # keep in sync with __version__; read by AST, must be a literal
+    VERSION = "1.2.0"  # keep in sync with __version__; read by AST, must be a literal
     AUTHOR = "Toby"
 
     def __init__(self) -> None:
@@ -120,10 +118,10 @@ class IndentBeeper(Extension):
             ExtensionPreference.boolean(
                 "enabled", "Beep the indentation of each line", DEFAULT_ENABLED,
             ),
-            ExtensionPreference.integer(
-                "minimum-units",
-                "Least indentation worth a beep, in spaces",
-                DEFAULT_MINIMUM_UNITS, MINIMUM_UNITS_MIN, MINIMUM_UNITS_MAX,
+            ExtensionPreference.boolean(
+                "beep-on-change-only",
+                "Beep only when the indentation changes",
+                DEFAULT_BEEP_ON_CHANGE_ONLY,
             ),
             ExtensionPreference.boolean(
                 "beep-while-typing",

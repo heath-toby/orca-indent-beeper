@@ -17,9 +17,8 @@ indentation at all, and climbs **a quarter tone** (half a semitone) per space.
 A tab is worth four spaces, so one tab is a tone and a half up, and **every six
 tabs is exactly an octave**:
 
-1. No indentation at all — A3, 220 Hz (silent by default; see the threshold
-   under Settings)
-2. One space — 226 Hz (silent by default, for the same reason)
+1. No indentation at all — A3, 220 Hz
+2. One space — 226 Hz
 3. One tab — B3, 247 Hz
 4. Six tabs — A4, 440 Hz
 5. Twelve tabs — A5, 880 Hz
@@ -29,6 +28,50 @@ Every octave on the way up lands on an A, which is the easiest interval there
 is to place without a reference tone. And because four quarter tones make a
 whole tone, **one tab is exactly one whole tone**, so indentation counted in
 tabs climbs a whole-tone scale: A, B, C#, D#, F, G, and back to A at six tabs.
+
+## It beeps on a change of indentation, not on every line
+
+A line's depth in isolation is rarely news. The moment it *changes* is. So by
+default the tone reports a change: reading down a block of code at a constant
+indent is silent, and the line that steps in or out of it sounds.
+
+Reading this, you hear four tones, not nine:
+
+```
+def f(a, b):          <- 0, beeps
+    if a:             <- 4, beeps
+        return b      <- 8, beeps
+        # and more    <- 8, silent
+        # and more    <- 8, silent
+                      <- blank, silent
+    return a          <- 4, beeps
+    # tidy up         <- 4, silent
+    # tidy up         <- 4, silent
+```
+
+Coming back to the left margin is a change like any other, and sounds the
+bottom of the ladder. Staying there — reading prose, where every line is at
+the margin — is silent after the first.
+
+Two details worth knowing:
+
+1. **A line with nothing on it changes nothing.** A blank line has no
+   indentation because it has no content, not because the code came back to
+   the margin. Counting it as a change to zero would beep twice for every
+   blank line in a file, once down and once back, and report a structural
+   change that never happened. Orca already says "blank". A line of *only
+   whitespace* is different — that has a real depth, and it beeps.
+2. **Typing beeps on every keystroke**, because every keystroke in the
+   indentation is a change. Backspacing the last space away beeps the bottom
+   of the ladder: there was an indent and now there is not, which is a change
+   worth hearing.
+
+Turn **Beep only when the indentation changes** off to beep every line
+instead, which is NVDA's behaviour and what versions before 1.2.0 did.
+
+The depth is forgotten — so the next line beeps whatever it is — when you
+switch the beep on with Orca+Ctrl+I, when a setting changes, and at the start
+of a session. There is nothing for the first line to have changed from.
 
 ### Past the top
 
@@ -93,18 +136,9 @@ Everything else lives in **Orca Preferences → User Extensions → Indent
 Beeper**:
 
 1. **Beep the indentation of each line** — the same toggle as the keybinding.
-2. **Least indentation worth a beep, in spaces** — 2 by default, meaning more
-   than one space. Below it there is no tone at all, so a line at the left
-   margin is silent and so is a line with one stray space, while a tab (four
-   units) still sounds. This is what keeps prose quiet: every line of a
-   paragraph sits at the margin, and a tone on all of them carries no
-   information. Set it to 0 to sound the bottom of the ladder on every
-   unindented line instead. The cost of a threshold is that silence now means
-   either "not indented enough to matter" or "the beep is off"; toggling with
-   Orca+Ctrl+I beeps once to confirm, which is how you tell those apart.
-3. **Beep while typing the indentation of a line** — on by default. Backspacing
-   out of the indentation goes quiet once it drops below the threshold, rather
-   than reporting its way down to the margin.
+2. **Beep only when the indentation changes** — on by default, and the thing
+   that makes the tone worth listening to. See below.
+3. **Beep while typing the indentation of a line** — on by default.
 4. **Spaces a tab counts as** — 4, as in NVDA. Set it to whatever the files you
    read are actually indented with.
 5. **Pitch for no indentation** — 220 Hz. Moves the whole ladder.
