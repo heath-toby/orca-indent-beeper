@@ -41,7 +41,7 @@ def frame_count(frequency: float, duration_ms: int) -> int:
     """Frames in a tone, rounded up to a whole number of cycles.
 
     Rounding up is what puts the end of the tone at a zero crossing. Asking
-    for 40 ms at 220 Hz gives 40.8 ms, and the extra is inaudible next to the
+    for 60 ms at 220 Hz gives 61.2 ms, and the extra is inaudible next to the
     click you would get from stopping mid-cycle.
     """
     per_cycle = samples_per_cycle(frequency)
@@ -60,9 +60,9 @@ def frame_count(frequency: float, duration_ms: int) -> int:
 # high harmonics there for the click to hide in. The higher the pitch the worse
 # it gets, so the tone that clicks hardest is the one for the deepest indent.
 #
-# Four milliseconds of each end of a 40 ms tone is a tenth of it and leaves the
-# timbre alone; what it removes is the edge. Set DEFAULT_FADE_MS to 0 to get
-# NVDA's generator sample for sample, which is what the test asserts.
+# Four milliseconds at each end of a 60 ms tone is a fifteenth of it and leaves
+# the timbre alone; what it removes is the edge. Set DEFAULT_FADE_MS to 0 to
+# get NVDA's generator sample for sample, which is what the test asserts.
 DEFAULT_FADE_MS = 4.0
 
 

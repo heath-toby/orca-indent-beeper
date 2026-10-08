@@ -35,9 +35,9 @@ Eighteen tabs is as high as it goes. Rather than give up and start talking —
 NVDA speaks the number of spaces at this point — **the ladder simply starts
 again from the bottom, and the tone is held a little longer each time round**:
 
-1. 73 spaces — A3 again, but held 70 ms instead of 40
-2. 146 spaces — A3 again, 100 ms
-3. 219 spaces — A3 again, 130 ms
+1. 73 spaces — A3 again, but held 90 ms instead of 60
+2. 146 spaces — A3 again, 120 ms
+3. 219 spaces — A3 again, 150 ms
 
 So a pitch on its own is deliberately ambiguous — 220 Hz is no indent, and it
 is also 73 spaces, and 146 — and the length of the tone is what tells them
@@ -45,7 +45,7 @@ apart. Short means the first three octaves; longer means you have been round
 again. Nothing is ever spoken, because a beep is quicker than a sentence and
 that is the whole point of having one.
 
-The growth stops at 160 ms by default. "And so on" has to stop somewhere: a
+The growth stops at 180 ms by default. "And so on" has to stop somewhere: a
 line indented by a thousand spaces is a broken file, not a deep nest, and it
 should not be answered with a tone that outlasts the line.
 
@@ -103,9 +103,9 @@ Beeper**:
    semitone (steeper, but it uses the range four times as fast), 48 for an
    eighth tone (finer grades of shallow indent).
 7. **Octaves to climb before starting again** — 3.
-8. **Tone length** — 40 ms.
+8. **Tone length** — 60 ms. NVDA uses 40, which is a shade short.
 9. **Milliseconds added each time the pitch starts again** — 30.
-10. **Longest tone** — 160 ms.
+10. **Longest tone** — 180 ms.
 11. **Beep volume**, and **scale the beep with Orca's speech volume** — on by
     default, so turning Orca down turns the beep down with it.
 12. **Fade at each end of the tone** — see above.
@@ -189,9 +189,10 @@ buffer. `do-timestamp` stamps them as they arrive and does so accurately: four
 tones pushed 300 ms apart come out stamped 0, 301, 603 and 904 ms.
 
 Turning sync off throws that away — the sink then renders each buffer the
-instant it arrives, back to back, so four 40 ms tones pushed over 1.2 seconds
-become 160 ms of continuous warble drifting further behind the keyboard with
-every press, and most beeps are never heard as separate sounds at all. Two test
+instant it arrives, back to back, so four short tones pushed over 1.2 seconds
+become a sixth of a second of continuous warble, drifting further behind the
+keyboard with every press, and most beeps are never heard as separate sounds
+at all. Two test
 rows guard against it coming back.
 
 Rendered tones are cached by depth, so arrowing through a file costs a

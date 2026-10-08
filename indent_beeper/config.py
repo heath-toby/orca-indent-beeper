@@ -37,7 +37,11 @@ OCTAVES_MIN, OCTAVES_MAX = 1, 5
 DEFAULT_TAB_UNITS = 4
 TAB_UNITS_MIN, TAB_UNITS_MAX = 1, 16
 
-DEFAULT_BASE_DURATION_MS = 40
+# 60 ms. NVDA's own default is 40, which Toby found very slightly too short to
+# sit comfortably under a line of speech -- it reads as a blip rather than a
+# note. 60 is long enough to have a pitch you can place without being long
+# enough to get in the way of the word after it.
+DEFAULT_BASE_DURATION_MS = 60
 BASE_DURATION_MIN, BASE_DURATION_MAX = 10, 500
 
 # Added each time the ladder starts again. This is the only thing telling one
@@ -45,7 +49,9 @@ BASE_DURATION_MIN, BASE_DURATION_MAX = 10, 500
 DEFAULT_RUN_EXTRA_MS = 30
 RUN_EXTRA_MIN, RUN_EXTRA_MAX = 0, 200
 
-DEFAULT_MAX_DURATION_MS = 160
+# Raised with the base, so the growth keeps the same five distinguishable
+# steps it had: 60, 90, 120, 150, 180.
+DEFAULT_MAX_DURATION_MS = 180
 MAX_DURATION_MIN, MAX_DURATION_MAX = 40, 1000
 
 # Raised-cosine fade at each end, in milliseconds. 0 reproduces NVDA's
