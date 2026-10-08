@@ -70,6 +70,18 @@ Four milliseconds of raised-cosine fade at each end fixes it and leaves the
 timbre alone. Set **Fade at each end of the tone** to 0 if you would rather
 have NVDA's output exactly, click included.
 
+## Where it beeps
+
+1. **Reading a line** — arrowing by line, Page Up and Down, Home and End, and
+   anything else that presents a line, in any application.
+2. **Flat review** — reviewing by line beeps too, since flat review presents
+   its own lines and never goes near the ordinary line-reading path.
+3. **Typing the indentation** — a space or tab typed while everything before
+   the caret on that line is whitespace beeps one rung higher, and backspacing
+   it away comes back down. So you hear an indent being built as well as read.
+   Typing a letter does not beep, and neither does a space in the middle of a
+   sentence.
+
 ## Usage
 
 **Orca+Ctrl+I** toggles the beep, says which it now is, and — when switching it
@@ -83,19 +95,20 @@ Beeper**:
 2. **Beep for lines with no indentation** — on by default. Turning it off keeps
    prose quiet, at the cost of silence meaning both "no indent" and "switched
    off".
-3. **Spaces a tab counts as** — 4, as in NVDA. Set it to whatever the files you
+3. **Beep while typing the indentation of a line** — on by default.
+4. **Spaces a tab counts as** — 4, as in NVDA. Set it to whatever the files you
    read are actually indented with.
-4. **Pitch for no indentation** — 220 Hz. Moves the whole ladder.
-5. **Pitch steps per octave** — 24 for a quarter tone per space, 12 for a
+5. **Pitch for no indentation** — 220 Hz. Moves the whole ladder.
+6. **Pitch steps per octave** — 24 for a quarter tone per space, 12 for a
    semitone (steeper, but it uses the range four times as fast), 48 for an
    eighth tone (finer grades of shallow indent).
-6. **Octaves to climb before starting again** — 3.
-7. **Tone length** — 40 ms.
-8. **Milliseconds added each time the pitch starts again** — 30.
-9. **Longest tone** — 160 ms.
-10. **Beep volume**, and **scale the beep with Orca's speech volume** — on by
+7. **Octaves to climb before starting again** — 3.
+8. **Tone length** — 40 ms.
+9. **Milliseconds added each time the pitch starts again** — 30.
+10. **Longest tone** — 160 ms.
+11. **Beep volume**, and **scale the beep with Orca's speech volume** — on by
     default, so turning Orca down turns the beep down with it.
-11. **Fade at each end of the tone** — see above.
+12. **Fade at each end of the tone** — see above.
 
 This add-on declares its settings to Orca rather than carrying a dialog of its
 own, because every one of them is a number or a toggle and the beep is its own
@@ -137,14 +150,28 @@ invalidate the hash behind your back.
 
 ## How it works
 
-There is exactly one place this needs to hook. Orca's `Script.say_line` hands
-the raw line to `SpeechPresenter.speak_line` — raw being the point, because the
+Reading a line hooks `SpeechPresenter.speak_line`, which is where
+`Script.say_line` hands the line over — raw being the point, because the
 leading whitespace is still on it at that moment and everything downstream is
 entitled to strip it. Nothing overrides `say_line`, the web script included, so
-patching `speak_line` covers arrowing by line, Home, End and anything else that
-presents a line, in every application, from one hook. The beep goes in before
-the original runs, so the tone leads the line rather than landing on top of its
-first word.
+that one patch covers line navigation in every application. The beep goes in
+before the original runs, so the tone leads the line rather than landing on top
+of its first word.
+
+Flat review needs its own hook on `FlatReviewPresenter._line_presentation`,
+because it presents its own lines and never calls `say_line`. Braille events
+are skipped there, matching Orca: they present no speech, so they get no tone.
+
+Typing hooks the two text-change handlers, `Script._on_text_inserted` and
+`_on_text_deleted`, which is where Orca learns what was inserted or removed.
+That signal is deliberately narrow — the edit has to be whitespace *and*
+everything before the caret on that line has to be whitespace — so it fires
+for an indent being built and not for prose.
+
+The pipeline is primed with five milliseconds of silence at startup, which
+looks odd and is load-bearing: a live `appsrc` does not finish its transition
+to PLAYING until a buffer arrives, so without the priming the first real tone
+was pushed into a pipeline still in PAUSED and lost.
 
 A beep on every line is a beep on every press of Down, held down. Opening the
 audio device per beep is out of the question at that rate, so the pipeline is
@@ -167,12 +194,26 @@ arrowing through a file costs a dictionary lookup per line.
 ./install.sh && python3 tests-tones.py
 ```
 
-48 rows. It reimplements NVDA's C generator from `nvdaHelper/local/beeps.cpp`
+62 rows. It reimplements NVDA's C generator from `nvdaHelper/local/beeps.cpp`
 and asserts this one matches it sample for sample with the fade off; it checks
 the ladder climbs, wraps and lengthens as described, and that an out-of-range
 setting is clamped rather than trusted; and it pushes tones through a real
 GStreamer chain ending in a file, so the pitch and length that come out the far
-end are measured rather than assumed.
+end are measured rather than assumed. The typing rows check the narrow signal
+in both directions: which edits beep, which are correctly ignored, and that
+both the typing toggle and the master toggle silence it.
+
+If something is not beeping, run Orca with diagnostics and read the log:
+
+```bash
+ORCA_INDENT_BEEPER_DEBUG=1 orca --replace &
+tail -f ~/.local/share/orca/indent_beeper/debug.log
+```
+
+Every beep logs its source (`say-line`, `flat-review` or `typing`), the depth,
+the pitch, the volume, what the audio push returned and the pipeline's state —
+and every decision *not* to beep logs its reason. The log lives outside the
+package, because Orca hashes everything inside it.
 
 ## Licence
 

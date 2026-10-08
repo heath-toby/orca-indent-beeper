@@ -66,6 +66,11 @@ DEFAULT_FOLLOW_SPEECH_VOLUME = True
 # can rely on is easier to read than one you cannot.
 DEFAULT_BEEP_ON_NO_INDENT = True
 
+# Beep while the indentation is being typed, as well as when a line is read.
+# Not NVDA's behaviour -- NVDA's tone belongs to reading -- but hearing the
+# indent climb as you make it is the other half of the same information.
+DEFAULT_BEEP_WHILE_TYPING = True
+
 
 class Config:
     """The current settings, re-read on demand."""
@@ -84,6 +89,7 @@ class Config:
         self.volume = DEFAULT_VOLUME
         self.follow_speech_volume = DEFAULT_FOLLOW_SPEECH_VOLUME
         self.beep_on_no_indent = DEFAULT_BEEP_ON_NO_INDENT
+        self.beep_while_typing = DEFAULT_BEEP_WHILE_TYPING
 
     @classmethod
     def load(cls, settings=None) -> "Config":
@@ -134,6 +140,8 @@ class Config:
             settings.get("follow-speech-volume", DEFAULT_FOLLOW_SPEECH_VOLUME))
         self.beep_on_no_indent = bool(
             settings.get("beep-on-no-indent", DEFAULT_BEEP_ON_NO_INDENT))
+        self.beep_while_typing = bool(
+            settings.get("beep-while-typing", DEFAULT_BEEP_WHILE_TYPING))
 
         # A ceiling below the base duration would make every run shorter than
         # the first, which reads as the ladder going backwards.

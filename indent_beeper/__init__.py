@@ -31,6 +31,7 @@ from .config import (
     DEFAULT_BASE_DURATION_MS,
     DEFAULT_BASE_FREQUENCY,
     DEFAULT_BEEP_ON_NO_INDENT,
+    DEFAULT_BEEP_WHILE_TYPING,
     DEFAULT_ENABLED,
     DEFAULT_FADE_MS,
     DEFAULT_FOLLOW_SPEECH_VOLUME,
@@ -120,6 +121,11 @@ class IndentBeeper(Extension):
                 "beep-on-no-indent",
                 "Beep for lines with no indentation",
                 DEFAULT_BEEP_ON_NO_INDENT,
+            ),
+            ExtensionPreference.boolean(
+                "beep-while-typing",
+                "Beep while typing the indentation of a line",
+                DEFAULT_BEEP_WHILE_TYPING,
             ),
             ExtensionPreference.integer(
                 "tab-units", "Spaces a tab counts as", DEFAULT_TAB_UNITS,

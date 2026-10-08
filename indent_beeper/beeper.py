@@ -16,6 +16,8 @@ you are learning the ladder; switch it off in Orca and the beep stands alone.
 from __future__ import annotations
 
 import logging
+import os
+import time
 
 from orca import speech_presenter
 
@@ -25,6 +27,37 @@ from .player import TonePlayer
 from .tone import render
 
 _log = logging.getLogger("orca-indent-beeper")
+
+# Diagnostics go to a file rather than Orca's log, and outside the package:
+# Orca hashes every file in the extension directory, so anything written at
+# runtime inside it would invalidate the approval.
+#
+#     ORCA_INDENT_BEEPER_DEBUG=1 orca --replace &
+#
+# Off by default and gated on a module-level flag, so an ordinary run does not
+# pay for the formatting on every line it reads.
+_DATA_DIR = os.path.join(
+    os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
+    "orca", "indent_beeper",
+)
+_DEBUG = os.environ.get("ORCA_INDENT_BEEPER_DEBUG", "").lower() in ("1", "true", "yes")
+_debug_log = None
+
+
+def _debug(message: str) -> None:
+    """Append a line to the debug log, if one was asked for."""
+    global _debug_log
+    if not _DEBUG:
+        return
+    try:
+        if _debug_log is None:
+            os.makedirs(_DATA_DIR, exist_ok=True)
+            _debug_log = open(os.path.join(_DATA_DIR, "debug.log"), "a")
+        _debug_log.write(f"{time.strftime('%H:%M:%S')}.{int(time.time() * 1000) % 1000:03d} "
+                         f"{message}\n")
+        _debug_log.flush()
+    except Exception:  # pylint: disable=broad-exception-caught
+        pass
 
 _config: Config | None = None
 _player: TonePlayer | None = None
@@ -97,20 +130,75 @@ def _tone_for(units: int) -> bytes:
     return pcm
 
 
-def beep_for_line(line: str) -> None:
+def beep_for_line(line: str, source: str = "line") -> None:
     """Sound the tone for a line's indentation. Safe to call for any line."""
-    if _config is None or not _config.enabled or _player is None:
+    if _config is None or _player is None:
+        _debug(f"{source}: not running")
+        return
+    if not _config.enabled:
+        _debug(f"{source}: disabled")
         return
     if not _player.available:
+        _debug(f"{source}: no player")
         return
     units = indentation_units(line, _config.tab_units)
     if units == 0 and not _config.beep_on_no_indent:
+        _debug(f"{source}: no indent, not beeping")
         return
     # Re-read the speech volume per beep rather than caching it: Orca's volume
     # keys change it live, and a beep that stayed loud after the voice was
     # turned down would be the first thing anyone complained about.
     _apply_volume()
-    _player.play(_tone_for(units))
+    frequency, duration = tone_for_config(units, _config)
+    result = _player.play(_tone_for(units))
+    _debug(f"{source}: units={units} {frequency:.1f}Hz {duration}ms "
+           f"vol={_player.last_volume:.3f} push={result} "
+           f"state={_player.state_name} line={line[:40]!r}")
+
+
+def beep_for_typed_indent(obj, changed_text: str) -> None:
+    """Beep while the indentation of the current line is being typed.
+
+    Reading a line and building one are different things, so this is a
+    different signal from the one on speak_line. It fires only when the text
+    that changed was itself whitespace *and* everything before the caret on
+    this line is whitespace -- that is what "in the indentation" means. Typing
+    a letter does not beep, and neither does a space in the middle of a
+    sentence.
+
+    The pitch is the whitespace *before the caret*, not the whole leading run,
+    so it tracks what you have actually typed: hold space down and the tone
+    climbs a step per press, backspace it away and it comes back down.
+    """
+    if _config is None or not _config.enabled or not _config.beep_while_typing:
+        return
+    if not changed_text or changed_text.strip(" \t\u00a0"):
+        # Not a whitespace edit, so it is not an indentation edit.
+        return
+    try:
+        from orca.ax_text import AXText
+        offset = AXText.get_caret_offset(obj)
+        line, start = AXText.get_line_at_offset(obj, max(0, offset))[0:2]
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        _debug(f"typing: could not read the line: {error}")
+        return
+    if line is None:
+        return
+    column = max(0, offset - start)
+    prefix = line[:column].replace("\u00a0", " ")
+    if prefix.strip(" \t"):
+        # There is real text before the caret, so the caret is past the
+        # indentation and this space belongs to the prose.
+        _debug(f"typing: caret is past the indentation, not beeping")
+        return
+    units = indentation_units(prefix, _config.tab_units)
+    if units == 0 and not _config.beep_on_no_indent:
+        return
+    _apply_volume()
+    frequency, duration = tone_for_config(units, _config)
+    result = _player.play(_tone_for(units)) if _player is not None else "no-player"
+    _debug(f"typing: units={units} {frequency:.1f}Hz {duration}ms push={result} "
+           f"prefix={prefix!r}")
 
 
 def install(config: Config) -> None:
@@ -130,13 +218,69 @@ def install(config: Config) -> None:
         # Before the original, so the tone leads the line rather than landing
         # on top of the first word of it.
         try:
-            beep_for_line(line)
+            beep_for_line(line, source="say-line")
         except Exception as error:  # pylint: disable=broad-exception-caught
             _log.warning("IndentBeeper: %s", error)
+            _debug(f"say-line: ERROR {type(error).__name__}: {error}")
         return original_speak_line(self, script, obj, start_offset, end_offset, line)
 
     _patch(speech_presenter.SpeechPresenter, "speak_line", _patched_speak_line)
+
+    # Flat review presents its own lines and never goes near say_line, so it
+    # needs its own hook or reviewing a file is silent while arrowing through
+    # the same file beeps.
+    try:
+        from orca import flat_review_presenter
+        from orca import input_event
+
+        presenter_class = flat_review_presenter.FlatReviewPresenter
+        original_line_presentation = presenter_class._line_presentation
+
+        def _patched_line_presentation(self, script, event=None, speech_type=1):
+            try:
+                # Braille events present no speech here, so they get no beep
+                # either: the tone belongs with the spoken line.
+                if not isinstance(event, input_event.BrailleEvent):
+                    context = self.get_or_create_context(script)
+                    line = context.get_current_line_string()
+                    if line and line != "\n":
+                        beep_for_line(line, source="flat-review")
+            except Exception as error:  # pylint: disable=broad-exception-caught
+                _debug(f"flat-review: ERROR {type(error).__name__}: {error}")
+            return original_line_presentation(self, script, event, speech_type)
+
+        _patch(presenter_class, "_line_presentation", _patched_line_presentation)
+        _debug("installed the flat review hook")
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        _log.warning("IndentBeeper: could not patch flat review: %s", error)
+        _debug(f"flat review hook FAILED: {error}")
+
+    # Typing the indentation is a different act from reading it, so it gets
+    # its own hooks: the text-changed handlers, which is where Orca learns
+    # what was inserted or deleted and where.
+    try:
+        from orca.scripts import default as default_script
+
+        for attribute in ("_on_text_inserted", "_on_text_deleted"):
+            original_handler = getattr(default_script.Script, attribute)
+
+            def _patched_text_change(self, event, _original=original_handler):
+                try:
+                    changed = event.any_data if isinstance(event.any_data, str) else ""
+                    if changed:
+                        beep_for_typed_indent(event.source, changed)
+                except Exception as error:  # pylint: disable=broad-exception-caught
+                    _debug(f"typing: ERROR {type(error).__name__}: {error}")
+                return _original(self, event)
+
+            _patch(default_script.Script, attribute, _patched_text_change)
+        _debug("installed the typing hooks")
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        _log.warning("IndentBeeper: could not patch the text-change handlers: %s", error)
+        _debug(f"typing hooks FAILED: {error}")
+
     _log.info("IndentBeeper: installed (enabled=%s)", config.enabled)
+    _debug(f"installed: enabled={config.enabled} player={_player.describe()}")
 
 
 def uninstall() -> None:

@@ -221,6 +221,73 @@ for units in depths:
     offset += count
 os.remove(out)
 
+# --- typing the indentation -----------------------------------------------
+# A different signal from reading a line: it fires only when the edit was
+# whitespace AND everything before the caret on that line is whitespace. The
+# pitch follows what is before the caret, so holding space down climbs a step
+# per press and backspacing comes back down.
+from orca.ax_text import AXText  # noqa: E402
+from indent_beeper import beeper as B  # noqa: E402
+
+class FakeLine:
+    """Stands in for a text object showing one line, with a caret in it."""
+    def __init__(self, text, caret):
+        self.text, self.caret = text, caret
+
+AXText.get_caret_offset = staticmethod(lambda o: o.caret)
+AXText.get_line_at_offset = staticmethod(lambda o, off: (o.text, 0, len(o.text)))
+
+played = []
+B._config = cfg.Config.load(Settings())
+B._cache.clear()
+B._cache_identity = None
+
+class FakePlayer:
+    available = True
+    last_volume = 0.0
+    state_name = "playing"
+    def set_volume(self, level): self.last_volume = level
+    def play(self, pcm): played.append(len(pcm)); return "ok"
+
+B._player = FakePlayer()
+
+
+def typed(text, caret, changed):
+    """Return the units beeped for an edit, or None for no beep."""
+    played.clear()
+    B.beep_for_typed_indent(FakeLine(text, caret), changed)
+    if not played:
+        return None
+    for units in range(0, 400):
+        if len(B._tone_for(units)) == played[0]:
+            return units
+    return "?"
+
+
+check("typing the first space beeps one rung", typed(" ", 1, " "), 1)
+check("the second beeps two", typed("  ", 2, " "), 2)
+check("the fifth beeps five", typed("     ", 5, " "), 5)
+check("a tab beeps four", typed("\t", 1, "\t"), 4)
+check("backspacing a space comes back down", typed("   ", 3, " "), 3)
+check("deleting the last of the indent returns to the base",
+      typed("", 0, " "), 0)
+check("typing a letter does not beep", typed("x", 1, "x"), None)
+check("a space in the middle of prose does not beep",
+      typed("hello world", 6, " "), None)
+check("a space after text on an indented line does not beep",
+      typed("    def f(a, b)", 13, " "), None)
+check("a space typed before existing text still beeps",
+      typed("   text", 3, " "), 3)
+check("a non-breaking space typed as indentation beeps",
+      typed("\u00a0\u00a0", 2, "\u00a0"), 2)
+check("an empty edit does not beep", typed("   ", 3, ""), None)
+B._config.beep_while_typing = False
+check("the typing beep can be switched off", typed("  ", 2, " "), None)
+B._config.beep_while_typing = True
+B._config.enabled = False
+check("the master toggle silences typing too", typed("  ", 2, " "), None)
+B._config.enabled = True
+
 width_name = max(len(r[0]) for r in rows)
 for name, want, got, status in rows:
     print(f"  {status:4s} {name:<{width_name}}  want={want}  got={got}")
