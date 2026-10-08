@@ -13,6 +13,7 @@ asked for, rather than merely being generated correctly in memory.
 import math
 import os
 import struct
+import time
 import sys
 import wave
 
@@ -287,6 +288,60 @@ B._config.beep_while_typing = True
 B._config.enabled = False
 check("the master toggle silences typing too", typed("  ", 2, " "), None)
 B._config.enabled = True
+
+# --- the sink must stay synchronised, and the buffers must carry the gaps ---
+# These two rows are the regression for the bug that made the add-on useless:
+# the beeps ran into one another and most were never heard as separate sounds.
+# One continuous stream is carrying discrete tones, so the timestamp on each
+# buffer is the only thing saying where the silence between them goes. Turning
+# the sink's clock sync off throws that away and renders them back to back.
+from indent_beeper.player import TonePlayer, _configure_sink  # noqa: E402
+
+player = TonePlayer()
+sink = player._pipeline.get_by_name("sink") if player._pipeline else None
+_name, sync = _configure_sink(sink) if sink is not None else ("none", None)
+check("the audio sink keeps clock sync ON", sync, True)
+check("the pipeline is playing before the first tone", player.state_name, "playing")
+player.shutdown()
+
+# And the timestamps themselves: four tones pushed at a known interval must
+# come out stamped at that interval, not packed end to end.
+stamps = []
+probe_pipeline = Gst.parse_launch(
+    f"appsrc name=src caps={_CAPS} ! audiorate ! wavenc "
+    f"! filesink location={os.path.join(os.environ.get('TMPDIR', '/tmp'), 'ib-ts.wav')}")
+probe_src = probe_pipeline.get_by_name("src")
+probe_src.set_property("format", Gst.Format.TIME)
+probe_src.set_property("is-live", True)
+probe_src.set_property("do-timestamp", True)
+probe_src.get_static_pad("src").add_probe(
+    Gst.PadProbeType.BUFFER,
+    lambda _pad, info: (stamps.append(info.get_buffer().pts), Gst.PadProbeReturn.OK)[1])
+probe_pipeline.set_state(Gst.State.PLAYING)
+for _ in range(4):
+    probe_src.emit("push-buffer", Gst.Buffer.new_wrapped(tone.render(440.0, 40)))
+    time.sleep(0.2)
+probe_src.emit("end-of-stream")
+probe_pipeline.get_bus().timed_pop_filtered(
+    5 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+probe_pipeline.set_state(Gst.State.NULL)
+usable = [s for s in stamps if s != Gst.CLOCK_TIME_NONE]
+check("every pushed tone is timestamped", len(usable), 4)
+if len(usable) == 4:
+    gaps = [(usable[i + 1] - usable[i]) / 1e6 for i in range(3)]
+    close("the timestamps carry the real gap, not the tone length",
+          sum(gaps) / 3, 200.0, 25.0)
+    check("...which is far longer than the tone itself",
+          all(g > 100 for g in gaps), True)
+scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), "ib-ts.wav")
+if os.path.exists(scratch):
+    with wave.open(scratch) as handle:
+        filled = handle.getnframes() / handle.getframerate() * 1000
+    # audiorate fills the gaps from the timestamps, so the stream is far longer
+    # than the tone data. If sync were off, the sink would produce the short
+    # version instead -- which is what "cut off and disjointed" sounded like.
+    close("gaps become real silence in the stream", filled, 640.0, 120.0)
+    os.remove(scratch)
 
 width_name = max(len(r[0]) for r in rows)
 for name, want, got, status in rows:

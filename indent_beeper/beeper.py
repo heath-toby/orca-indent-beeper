@@ -45,9 +45,14 @@ _debug_log = None
 
 
 def _debug(message: str) -> None:
-    """Append a line to the debug log, if one was asked for."""
+    """Append a line to the debug log, if one was asked for.
+
+    Checked per call rather than once at import, so the setting can be turned
+    on in Orca's preferences and take effect immediately -- which is the only
+    way in when Orca is a systemd service and cannot see an exported variable.
+    """
     global _debug_log
-    if not _DEBUG:
+    if not _DEBUG and not (_config is not None and _config.debug):
         return
     try:
         if _debug_log is None:

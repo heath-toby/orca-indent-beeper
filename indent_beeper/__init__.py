@@ -32,6 +32,7 @@ from .config import (
     DEFAULT_BASE_FREQUENCY,
     DEFAULT_BEEP_ON_NO_INDENT,
     DEFAULT_BEEP_WHILE_TYPING,
+    DEFAULT_DEBUG,
     DEFAULT_ENABLED,
     DEFAULT_FADE_MS,
     DEFAULT_FOLLOW_SPEECH_VOLUME,
@@ -171,6 +172,9 @@ class IndentBeeper(Extension):
             ExtensionPreference.integer(
                 "fade-ms", "Fade at each end of the tone, in milliseconds",
                 DEFAULT_FADE_MS, FADE_MIN, FADE_MAX,
+            ),
+            ExtensionPreference.boolean(
+                "debug", "Log diagnostics to indent_beeper/debug.log", DEFAULT_DEBUG,
             ),
         ]
 

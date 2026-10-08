@@ -6,12 +6,25 @@ milliseconds, it can drop the beep entirely under key repeat, and on PipeWire
 it churns a stream node per press.
 
 So the pipeline is built once and left in PLAYING, and each beep is a buffer
-pushed into an appsrc. Nothing is written to disk and nothing is reopened. The
-sink runs with sync disabled, which is what makes a push play straight away
-rather than being scheduled against the pipeline clock and then dropped for
-arriving late -- a beep is wanted now or not at all.
+pushed into an appsrc.
 
     appsrc ! audioconvert ! volume ! autoaudiosink
+
+**The sink must stay synchronised to the clock.** This is the whole trick, and
+getting it wrong broke the add-on outright. One continuous stream is carrying
+discrete sounds separated by seconds of nothing, and the only thing saying
+where that silence goes is the timestamp on each buffer. ``do-timestamp``
+stamps them as they arrive, and it does so correctly: four tones pushed 300 ms
+apart come out stamped 0, 301, 603 and 904 ms.
+
+Disabling sync throws all of that away. The sink then renders each buffer the
+instant it arrives, back to back, with no silence between them -- four 40 ms
+tones pushed over 1.2 seconds become 160 ms of continuous warble that drifts
+further behind the keyboard with every press, and most of the beeps are never
+heard as separate sounds at all. That was the "few beeps, cut off and
+disjointed" bug, and sync had been disabled deliberately, on a guess that
+buffers would otherwise be dropped for arriving late. They are not: a live
+source stamps a buffer as of now, and the sink renders it one latency later.
 """
 
 from __future__ import annotations
@@ -99,7 +112,7 @@ class TonePlayer:
             _log.error("IndentBeeper: the pipeline would not get to READY")
             self._pipeline = None
             return
-        self._sink_name, self._sync = _disable_sync(sink)
+        self._sink_name, self._sync = _configure_sink(sink)
 
         result = self._pipeline.set_state(Gst.State.PLAYING)
         if result == Gst.StateChangeReturn.FAILURE:
@@ -186,12 +199,15 @@ class TonePlayer:
         self._volume = None
 
 
-def _disable_sync(element: Gst.Element) -> tuple[str, object]:
-    """Turn clock sync off on a sink, descending into a bin to find it.
+def _configure_sink(element: Gst.Element) -> tuple[str, object]:
+    """Set up the real sink for short, responsive sounds.
 
-    Returns (name, sync) for what it reached, so the caller can log whether it
-    actually got there. A sink that still has sync enabled drops a buffer for
-    arriving late, which for a beep means silence.
+    Sync is deliberately *not* touched -- see the module docstring. What is set
+    is the buffering, because the default is sized for playing music and would
+    leave the beep a fifth of a second behind the key that caused it.
+
+    Returns (name, sync) for whatever it reached, so a failure to descend into
+    the bin shows up in the log instead of silently leaving the defaults.
     """
     if isinstance(element, Gst.Bin):
         iterator = element.iterate_sinks()
@@ -199,10 +215,14 @@ def _disable_sync(element: Gst.Element) -> tuple[str, object]:
             result, child = iterator.next()
             if result != Gst.IteratorResult.OK:
                 break
-            return _disable_sync(child)
+            return _configure_sink(child)
         return (element.get_name(), "no-child-sink")
+    for name, value in (("buffer-time", 100_000), ("latency-time", 10_000)):
+        try:
+            element.set_property(name, value)
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
     try:
-        element.set_property("sync", False)
         return (element.get_name(), element.get_property("sync"))
     except Exception as error:  # pylint: disable=broad-exception-caught
-        return (element.get_name(), f"unsettable ({error})")
+        return (element.get_name(), f"unreadable ({error})")

@@ -109,6 +109,7 @@ Beeper**:
 11. **Beep volume**, and **scale the beep with Orca's speech volume** — on by
     default, so turning Orca down turns the beep down with it.
 12. **Fade at each end of the tone** — see above.
+13. **Log diagnostics** — see below.
 
 This add-on declares its settings to Orca rather than carrying a dialog of its
 own, because every one of them is a number or a toggle and the beep is its own
@@ -181,10 +182,20 @@ built once and left playing, and each beep is a buffer pushed into an `appsrc`:
 appsrc ! audioconvert ! volume ! autoaudiosink
 ```
 
-The sink runs with clock sync disabled, which is what makes a push play
-straight away rather than being scheduled and then dropped for arriving late —
-a beep is wanted now or not at all. Rendered tones are cached by depth, so
-arrowing through a file costs a dictionary lookup per line.
+**The sink stays synchronised to the clock, and that is load-bearing.** One
+continuous stream is carrying discrete sounds separated by seconds of nothing,
+and the only thing saying where that silence goes is the timestamp on each
+buffer. `do-timestamp` stamps them as they arrive and does so accurately: four
+tones pushed 300 ms apart come out stamped 0, 301, 603 and 904 ms.
+
+Turning sync off throws that away — the sink then renders each buffer the
+instant it arrives, back to back, so four 40 ms tones pushed over 1.2 seconds
+become 160 ms of continuous warble drifting further behind the keyboard with
+every press, and most beeps are never heard as separate sounds at all. Two test
+rows guard against it coming back.
+
+Rendered tones are cached by depth, so arrowing through a file costs a
+dictionary lookup per line.
 
 ## Tests
 
@@ -194,7 +205,7 @@ arrowing through a file costs a dictionary lookup per line.
 ./install.sh && python3 tests-tones.py
 ```
 
-62 rows. It reimplements NVDA's C generator from `nvdaHelper/local/beeps.cpp`
+68 rows. It reimplements NVDA's C generator from `nvdaHelper/local/beeps.cpp`
 and asserts this one matches it sample for sample with the fade off; it checks
 the ladder climbs, wraps and lengthens as described, and that an out-of-range
 setting is clamped rather than trusted; and it pushes tones through a real
@@ -203,12 +214,19 @@ end are measured rather than assumed. The typing rows check the narrow signal
 in both directions: which edits beep, which are correctly ignored, and that
 both the typing toggle and the master toggle silence it.
 
-If something is not beeping, run Orca with diagnostics and read the log:
+If something is not beeping, switch on **Log diagnostics** in Orca
+Preferences → User Extensions → Indent Beeper and read the log:
 
 ```bash
-ORCA_INDENT_BEEPER_DEBUG=1 orca --replace &
 tail -f ~/.local/share/orca/indent_beeper/debug.log
 ```
+
+It is a setting rather than only an environment variable for a reason: where
+Orca runs as a systemd user service, `ORCA_INDENT_BEEPER_DEBUG=1 orca --replace`
+sets the variable on the shell's Orca, which then hands over to the
+service-managed process that never saw it — so the log stays empty. The setting
+needs no restart. The environment variable still works if Orca is started from
+a shell with the service stopped.
 
 Every beep logs its source (`say-line`, `flat-review` or `typing`), the depth,
 the pitch, the volume, what the audio push returned and the pipeline's state —

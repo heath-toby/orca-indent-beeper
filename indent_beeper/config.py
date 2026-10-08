@@ -71,6 +71,14 @@ DEFAULT_BEEP_ON_NO_INDENT = True
 # indent climb as you make it is the other half of the same information.
 DEFAULT_BEEP_WHILE_TYPING = True
 
+# Write a line to ~/.local/share/orca/indent_beeper/debug.log for every beep,
+# and for every decision not to beep. A setting rather than only an environment
+# variable because Orca runs as a systemd user service here, so
+# ORCA_INDENT_BEEPER_DEBUG=1 orca --replace never reaches the process that
+# survives -- the variable is set on the shell's Orca, which then hands over to
+# the service-managed one. A setting can also be turned on without a restart.
+DEFAULT_DEBUG = False
+
 
 class Config:
     """The current settings, re-read on demand."""
@@ -90,6 +98,7 @@ class Config:
         self.follow_speech_volume = DEFAULT_FOLLOW_SPEECH_VOLUME
         self.beep_on_no_indent = DEFAULT_BEEP_ON_NO_INDENT
         self.beep_while_typing = DEFAULT_BEEP_WHILE_TYPING
+        self.debug = DEFAULT_DEBUG
 
     @classmethod
     def load(cls, settings=None) -> "Config":
@@ -142,6 +151,7 @@ class Config:
             settings.get("beep-on-no-indent", DEFAULT_BEEP_ON_NO_INDENT))
         self.beep_while_typing = bool(
             settings.get("beep-while-typing", DEFAULT_BEEP_WHILE_TYPING))
+        self.debug = bool(settings.get("debug", DEFAULT_DEBUG))
 
         # A ceiling below the base duration would make every run shorter than
         # the first, which reads as the ladder going backwards.
