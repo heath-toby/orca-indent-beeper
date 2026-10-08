@@ -66,11 +66,24 @@ DEFAULT_VOLUME = 0.4
 # beep down with it rather than leaving it shouting over a quiet voice.
 DEFAULT_FOLLOW_SPEECH_VOLUME = True
 
-# Beep at the bottom of the ladder for a line with no indentation at all.
-# On prose this means a beep per line, which some will want off; but silence
-# would otherwise mean both "no indent" and "beeping is off", and a beep you
-# can rely on is easier to read than one you cannot.
-DEFAULT_BEEP_ON_NO_INDENT = True
+# How deep a line has to be indented before it is worth a tone. Below this,
+# silence. Two means "more than one space", so the left margin is quiet and
+# so is a single stray space, while a tab (four units by default) still
+# sounds. Reading prose, where every line is at the margin, is therefore
+# silent -- which is the point: a beep on every line of a paragraph carries
+# no information, and the ear stops hearing it. Set it to 0 to go back to
+# sounding the bottom of the ladder on every unindented line.
+#
+# The cost of this is that silence now means either "not indented enough to
+# matter" or "the beep is off", which a tone on every line did at least
+# disambiguate. Toggling with Orca+Ctrl+I beeps once to confirm, which is
+# how you tell those apart.
+DEFAULT_MINIMUM_UNITS = 2
+MINIMUM_UNITS_MIN, MINIMUM_UNITS_MAX = 0, 32
+
+# Replaced by minimum-units. Kept only so an install that turned it off is
+# carried across rather than silently reverting to beeping at the margin.
+_LEGACY_NO_INDENT_KEY = "beep-on-no-indent"
 
 # Beep while the indentation is being typed, as well as when a line is read.
 # Not NVDA's behaviour -- NVDA's tone belongs to reading -- but hearing the
@@ -102,7 +115,7 @@ class Config:
         self.fade_ms = DEFAULT_FADE_MS
         self.volume = DEFAULT_VOLUME
         self.follow_speech_volume = DEFAULT_FOLLOW_SPEECH_VOLUME
-        self.beep_on_no_indent = DEFAULT_BEEP_ON_NO_INDENT
+        self.minimum_units = DEFAULT_MINIMUM_UNITS
         self.beep_while_typing = DEFAULT_BEEP_WHILE_TYPING
         self.debug = DEFAULT_DEBUG
 
@@ -153,8 +166,9 @@ class Config:
         self.volume = number("volume", DEFAULT_VOLUME, 0.0, 1.0, float)
         self.follow_speech_volume = bool(
             settings.get("follow-speech-volume", DEFAULT_FOLLOW_SPEECH_VOLUME))
-        self.beep_on_no_indent = bool(
-            settings.get("beep-on-no-indent", DEFAULT_BEEP_ON_NO_INDENT))
+        self.minimum_units = number(
+            "minimum-units", self._initial_minimum_units(settings),
+            MINIMUM_UNITS_MIN, MINIMUM_UNITS_MAX, int)
         self.beep_while_typing = bool(
             settings.get("beep-while-typing", DEFAULT_BEEP_WHILE_TYPING))
         self.debug = bool(settings.get("debug", DEFAULT_DEBUG))
@@ -163,6 +177,22 @@ class Config:
         # the first, which reads as the ladder going backwards.
         if self.max_duration_ms < self.base_duration_ms:
             self.max_duration_ms = self.base_duration_ms
+
+    @staticmethod
+    def _initial_minimum_units(settings) -> int:
+        """The default for minimum-units, honouring the setting it replaced.
+
+        Version 1.0.0 had a boolean, beep-on-no-indent. Someone who turned it
+        off wanted the margin quiet, so give them a threshold of one rather
+        than the new default of two -- that is their old behaviour exactly,
+        and nothing they chose is overridden. Anyone else gets two.
+        """
+        if settings.get("minimum-units", None) is not None:
+            return DEFAULT_MINIMUM_UNITS  # a stored value wins anyway
+        legacy = settings.get(_LEGACY_NO_INDENT_KEY, None)
+        if legacy is not None and not legacy:
+            return 1
+        return DEFAULT_MINIMUM_UNITS
 
     def set_enabled(self, enabled: bool) -> None:
         """Flip the toggle and remember it across restarts."""

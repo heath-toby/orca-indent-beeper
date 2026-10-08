@@ -17,8 +17,9 @@ indentation at all, and climbs **a quarter tone** (half a semitone) per space.
 A tab is worth four spaces, so one tab is a tone and a half up, and **every six
 tabs is exactly an octave**:
 
-1. No indentation at all — A3, 220 Hz
-2. One space — 226 Hz
+1. No indentation at all — A3, 220 Hz (silent by default; see the threshold
+   under Settings)
+2. One space — 226 Hz (silent by default, for the same reason)
 3. One tab — B3, 247 Hz
 4. Six tabs — A4, 440 Hz
 5. Twelve tabs — A5, 880 Hz
@@ -92,10 +93,18 @@ Everything else lives in **Orca Preferences → User Extensions → Indent
 Beeper**:
 
 1. **Beep the indentation of each line** — the same toggle as the keybinding.
-2. **Beep for lines with no indentation** — on by default. Turning it off keeps
-   prose quiet, at the cost of silence meaning both "no indent" and "switched
-   off".
-3. **Beep while typing the indentation of a line** — on by default.
+2. **Least indentation worth a beep, in spaces** — 2 by default, meaning more
+   than one space. Below it there is no tone at all, so a line at the left
+   margin is silent and so is a line with one stray space, while a tab (four
+   units) still sounds. This is what keeps prose quiet: every line of a
+   paragraph sits at the margin, and a tone on all of them carries no
+   information. Set it to 0 to sound the bottom of the ladder on every
+   unindented line instead. The cost of a threshold is that silence now means
+   either "not indented enough to matter" or "the beep is off"; toggling with
+   Orca+Ctrl+I beeps once to confirm, which is how you tell those apart.
+3. **Beep while typing the indentation of a line** — on by default. Backspacing
+   out of the indentation goes quiet once it drops below the threshold, rather
+   than reporting its way down to the margin.
 4. **Spaces a tab counts as** — 4, as in NVDA. Set it to whatever the files you
    read are actually indented with.
 5. **Pitch for no indentation** — 220 Hz. Moves the whole ladder.

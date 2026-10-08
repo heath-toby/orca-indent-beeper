@@ -22,7 +22,7 @@ import time
 from orca import speech_presenter
 
 from .config import Config
-from .indent import indentation_units, tone_for_config
+from .indent import indentation_units, should_beep, tone_for_config
 from .player import TonePlayer
 from .tone import render
 
@@ -135,8 +135,13 @@ def _tone_for(units: int) -> bytes:
     return pcm
 
 
-def beep_for_line(line: str, source: str = "line") -> None:
-    """Sound the tone for a line's indentation. Safe to call for any line."""
+def beep_for_line(line: str, source: str = "line", ignore_minimum: bool = False) -> None:
+    """Sound the tone for a line's indentation. Safe to call for any line.
+
+    ``ignore_minimum`` sounds the tone whatever the depth, which only the
+    toggle's confirmation beep wants: it has to be audible even when the
+    threshold would silence an unindented line.
+    """
     if _config is None or _player is None:
         _debug(f"{source}: not running")
         return
@@ -147,8 +152,9 @@ def beep_for_line(line: str, source: str = "line") -> None:
         _debug(f"{source}: no player")
         return
     units = indentation_units(line, _config.tab_units)
-    if units == 0 and not _config.beep_on_no_indent:
-        _debug(f"{source}: no indent, not beeping")
+    if not ignore_minimum and not should_beep(units, _config.minimum_units):
+        _debug(f"{source}: units={units} is below the minimum of "
+               f"{_config.minimum_units}, not beeping")
         return
     # Re-read the speech volume per beep rather than caching it: Orca's volume
     # keys change it live, and a beep that stayed loud after the voice was
@@ -197,7 +203,11 @@ def beep_for_typed_indent(obj, changed_text: str) -> None:
         _debug(f"typing: caret is past the indentation, not beeping")
         return
     units = indentation_units(prefix, _config.tab_units)
-    if units == 0 and not _config.beep_on_no_indent:
+    if not should_beep(units, _config.minimum_units):
+        # Backspacing out of the indentation goes quiet rather than reporting
+        # its way down to the margin, which matches what reading a line does.
+        _debug(f"typing: units={units} is below the minimum of "
+               f"{_config.minimum_units}, not beeping")
         return
     _apply_volume()
     frequency, duration = tone_for_config(units, _config)
@@ -327,5 +337,5 @@ def toggle() -> bool:
     # A tone straight after the announcement, so turning it on tells you what
     # "no indent" sounds like and you have a reference for the next line.
     if _config.enabled:
-        beep_for_line("")
+        beep_for_line("", source="toggle", ignore_minimum=True)
     return True
