@@ -7,7 +7,7 @@ is written inside the package -- the tones are generated into memory -- so
 there is no data directory to keep outside it.
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import logging
 
@@ -52,6 +52,8 @@ from .config import (
     RUN_EXTRA_MIN,
     TAB_UNITS_MAX,
     TAB_UNITS_MIN,
+    VOLUME_MAX,
+    VOLUME_MIN,
     Config,
 )
 
@@ -78,7 +80,7 @@ class IndentBeeper(Extension):
         "space of indentation and four for every tab, so the depth of a line "
         "is heard rather than counted out."
     )
-    VERSION = "1.2.0"  # keep in sync with __version__; read by AST, must be a literal
+    VERSION = "1.3.0"  # keep in sync with __version__; read by AST, must be a literal
     AUTHOR = "Toby"
 
     def __init__(self) -> None:
@@ -162,7 +164,8 @@ class IndentBeeper(Extension):
                 DEFAULT_MAX_DURATION_MS, MAX_DURATION_MIN, MAX_DURATION_MAX,
             ),
             ExtensionPreference.floating(
-                "volume", "Beep volume", DEFAULT_VOLUME, 0.0, 1.0,
+                "volume", "Beep volume", DEFAULT_VOLUME,
+                VOLUME_MIN, VOLUME_MAX,
             ),
             ExtensionPreference.boolean(
                 "follow-speech-volume",

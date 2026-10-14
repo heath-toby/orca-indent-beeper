@@ -1,30 +1,45 @@
-"""One audio stream, open for the session, fed a tone at a time.
-
-A beep on every line is a beep on every press of Down, held down. Opening the
-audio device per beep is out of the question at that rate: it costs tens of
-milliseconds, it can drop the beep entirely under key repeat, and on PipeWire
-it churns a stream node per press.
-
-So the pipeline is built once and left in PLAYING, and each beep is a buffer
-pushed into an appsrc.
+"""One reusable pipeline, driven PLAYING -> NULL for every tone.
 
     appsrc ! audioconvert ! volume ! autoaudiosink
 
-**The sink must stay synchronised to the clock.** This is the whole trick, and
-getting it wrong broke the add-on outright. One continuous stream is carrying
-discrete sounds separated by seconds of nothing, and the only thing saying
-where that silence goes is the timestamp on each buffer. ``do-timestamp``
-stamps them as they arrive, and it does so correctly: four tones pushed 300 ms
-apart come out stamped 0, 301, 603 and 904 ms.
+**The device is released between tones, and that is the whole point of this
+file.** Three add-ons on this machine play short sounds often, and which of
+them survives a Bluetooth output is decided by exactly one thing:
 
-Disabling sync throws all of that away. The sink then renders each buffer the
-instant it arrives, back to back, with no silence between them -- four 40 ms
-tones pushed over 1.2 seconds become 160 ms of continuous warble that drifts
-further behind the keyboard with every press, and most of the beeps are never
-heard as separate sounds at all. That was the "few beeps, cut off and
-disjointed" bug, and sync had been disabled deliberately, on a guess that
-buffers would otherwise be dropped for arriving late. They are not: a live
-source stamps a buffer as of now, and the sink renders it one latency later.
+1. ``audio_themes`` returns its pipeline to **NULL** when each sound ends, so
+   the device is closed between sounds. It plays as many sounds as you like on
+   A2DP and never cuts off.
+2. ``capitalbeep`` prerolls to **PAUSED** and parks there between beeps -- its
+   own comment says "so that repeated beeps only need a seek, not a device
+   reopen" -- which holds the device open. Its tone vanishes if you hear it
+   often enough.
+3. This add-on used to hold one stream in **PLAYING** for the session. Its tone
+   got shorter and shorter over a run of beeps and then disappeared.
+
+Wired output is fine in all three cases. A2DP is not: its latency is large and
+variable, and a stream held open across many short sounds drifts from the
+transport until what we hand over lands behind the play point and is discarded
+-- progressively, which is why the tone shrinks before it goes. Closing the
+device after each tone means nothing is carried from one beep to the next.
+
+Two consequences worth stating plainly:
+
+- A tone costs a device open, measured at 36-47 ms and paid on Orca's main
+  loop. That cost is why the first version of this file kept one stream open.
+  ``audio_themes`` pays it on every focus change and is the better precedent.
+- A tone carries *stream* time, not wall-clock time. The old pipeline was a
+  live source -- ``is-live`` with ``do-timestamp`` -- so every buffer named a
+  moment on the clock that the sink had to hit, and getting that wrong on a
+  drifting device is what cost us the tone. A tone is now a clip stamped
+  ``pts=0`` with its own duration, exactly as a file source would deliver it.
+
+  **Both halves of that are load-bearing.** Dropping the wall clock but
+  leaving the buffer unstamped altogether made the beep vanish outright:
+  with no duration the sink posted EOS before the tone could play -- measured
+  at 26-30 ms for a 61 ms tone -- and the EOS handler below then closed the
+  device on top of it. Stamped, EOS comes at 94-104 ms, which is the tone plus
+  the sink's own latency. If a change here ever makes the beep silent, measure
+  the interval from play() to EOS first; it is the whole story in one number.
 """
 
 from __future__ import annotations
@@ -44,10 +59,8 @@ _CAPS = (
     f"rate={SAMPLE_RATE},channels=2,layout=interleaved"
 )
 
-# Frames of silence pushed once at startup, purely to complete the pipeline's
-# transition to PLAYING. Five milliseconds: enough to preroll, far too short
-# to notice.
-_PRIME_FRAMES = SAMPLE_RATE // 200
+# The most the volume element will be asked for. See set_volume.
+MAX_GAIN = 2.0
 
 _gst_initialised = False
 
@@ -60,15 +73,15 @@ def _ensure_gst() -> None:
 
 
 class TonePlayer:
-    """Plays short PCM buffers down one long-lived stream."""
+    """Plays one short PCM buffer at a time, closing the device after each."""
 
     def __init__(self) -> None:
         _ensure_gst()
         self._pipeline: Gst.Pipeline | None = None
         self._source: Gst.Element | None = None
         self._volume: Gst.Element | None = None
+        self._sink_element: Gst.Element | None = None
         self._sink_name = "?"
-        self._sync = None
         self.last_volume = 0.0
         self._build()
 
@@ -92,53 +105,35 @@ class TonePlayer:
             return
 
         self._source.set_property("format", Gst.Format.TIME)
-        self._source.set_property("is-live", True)
-        # Let appsrc stamp each buffer as it arrives, so the caller never has
-        # to track a running timestamp across beeps that are seconds apart.
-        self._source.set_property("do-timestamp", True)
-        # Never block the caller: this is reached from Orca's main loop, and a
-        # full queue must drop a beep rather than freeze the screen reader.
+        # Deliberately NOT a live source, and deliberately not timestamped:
+        # see the module docstring. Each tone is a clip, not a moment in a
+        # stream.
+        self._source.set_property("is-live", False)
+        self._source.set_property("do-timestamp", False)
         self._source.set_property("block", False)
+
         bus = self._pipeline.get_bus()
         bus.add_signal_watch()
+        bus.connect("message::eos", self._on_eos)
         bus.connect("message::error", self._on_error)
         bus.connect("message::warning", self._on_warning)
 
-        # READY before PLAYING, and before touching sync: autoaudiosink picks
-        # its real sink on the way to READY, so until then the bin is empty and
-        # there is nothing to set sync on. Doing it at build time looked right
-        # and silently left sync enabled.
-        if self._pipeline.set_state(Gst.State.READY) == Gst.StateChangeReturn.FAILURE:
-            _log.error("IndentBeeper: the pipeline would not get to READY")
-            self._pipeline = None
-            return
-        self._sink_name, self._sync = _configure_sink(sink)
+        self._sink_element, self._sink_name = _descend_to_sink(sink)
 
-        result = self._pipeline.set_state(Gst.State.PLAYING)
-        if result == Gst.StateChangeReturn.FAILURE:
-            _log.error("IndentBeeper: the pipeline would not start")
-            self._pipeline = None
-            return
-        # A live source goes to PLAYING asynchronously, and measurably it does
-        # not get there on a timeout alone: it waits for a buffer. So the first
-        # real beep was being pushed into a pipeline still in PAUSED, and lost.
-        # Prime it with a few milliseconds of silence, which completes the
-        # transition without being heard, and then the first tone lands in a
-        # pipeline that is already playing.
-        self._source.emit(
-            "push-buffer",
-            Gst.Buffer.new_wrapped(bytes(_PRIME_FRAMES * 4)),
-        )
-        self._pipeline.get_state(250 * Gst.MSECOND)
-        _log.info("IndentBeeper: pipeline start returned %s, now %s",
-                  result.value_nick, self.state_name)
-        if self.state_name != "playing":
-            _log.warning("IndentBeeper: pipeline is %s after priming; play() "
-                         "will restart it per beep", self.state_name)
+    def _on_eos(self, _bus: Gst.Bus, _message: Gst.Message) -> None:
+        """The tone finished: close the device.
+
+        This is the line that matters. A message can still be in flight after
+        shutdown() has dropped the pipeline, so never assume it is there.
+        """
+        if self._pipeline is not None:
+            self._pipeline.set_state(Gst.State.NULL)
 
     def _on_error(self, _bus: Gst.Bus, message: Gst.Message) -> None:
         error, info = message.parse_error()
         _log.error("IndentBeeper: %s (%s)", error, info)
+        if self._pipeline is not None:
+            self._pipeline.set_state(Gst.State.NULL)
 
     def _on_warning(self, _bus: Gst.Bus, message: Gst.Message) -> None:
         warning, info = message.parse_warning()
@@ -156,73 +151,112 @@ class TonePlayer:
             return "none"
         return self._pipeline.get_state(0)[1].value_nick
 
+    @property
+    def device(self) -> str:
+        """The output the tone went to, for the log.
+
+        Read from ``current-device`` rather than ``device``: the writable one
+        is only what was asked for, which is nothing. It is empty between
+        tones now that the device is closed after each one, so the log shows
+        it for the tone that is sounding.
+        """
+        if self._sink_element is None:
+            return "?"
+        try:
+            return self._sink_element.get_property("current-device") or "closed"
+        except Exception:  # pylint: disable=broad-exception-caught
+            return "?"
+
     def describe(self) -> str:
         """What this player actually ended up being, for the log."""
-        return (f"sink={self._sink_name} sync={self._sync} "
-                f"state={self.state_name} rate={SAMPLE_RATE}")
+        return (f"sink={self._sink_name} state={self.state_name} "
+                f"rate={SAMPLE_RATE} lifecycle=playing-then-null")
 
     def set_volume(self, volume: float) -> None:
-        """Set the output level, 0.0 to 1.0."""
-        level = min(max(volume, 0.0), 1.0)
+        """Set the output level.
+
+        Above 1.0 is allowed and is where the default sits. The generator
+        peaks at 0.43 of full scale, so a gain of 2 still leaves half the
+        range unused -- the ceiling is here to stop a bad setting asking for
+        something absurd, not to keep the signal clean.
+        """
+        level = min(max(volume, 0.0), MAX_GAIN)
         self.last_volume = level
         if self._volume is not None:
             self._volume.set_property("volume", level)
 
     def play(self, pcm: bytes) -> str:
-        """Push one tone. Returns immediately; the tone sounds on its own.
+        """Play one tone, from the top, closing the device when it ends.
+
+        A tone still sounding is cut short in favour of the new one, which is
+        what ``audio_themes`` does: at key-repeat speed the tone you want is
+        the one for the line you are on.
 
         Returns what happened, as a short string for the log.
         """
         if self._source is None or self._pipeline is None:
             return "no-source"
-        # A stream left idle can be taken out of PLAYING underneath us -- the
-        # session manager may suspend it, and a state change anywhere in the
-        # pipeline can leave it PAUSED. Pushing into that goes nowhere, so put
-        # it back first rather than losing the beep.
-        state = self._pipeline.get_state(0)[1]
-        if state != Gst.State.PLAYING:
-            self._pipeline.set_state(Gst.State.PLAYING)
-            _log.debug("IndentBeeper: pipeline was %s; restarted it", state.value_nick)
-        buffer = Gst.Buffer.new_wrapped(pcm)
-        result = self._source.emit("push-buffer", buffer)
-        if result != Gst.FlowReturn.OK:
-            _log.debug("IndentBeeper: push returned %s", result)
-        return (result.value_nick if state == Gst.State.PLAYING
-                else f"{result.value_nick} (was {state.value_nick})")
+        # Back to NULL first: it both interrupts anything still sounding and
+        # guarantees appsrc a fresh segment, so the tone starts at zero.
+        self._pipeline.set_state(Gst.State.NULL)
+        result = self._pipeline.set_state(Gst.State.PLAYING)
+        if result == Gst.StateChangeReturn.FAILURE:
+            _log.debug("IndentBeeper: the pipeline would not start")
+            return "no-start"
+        flow = self._source.emit("push-buffer", _as_clip(pcm))
+        if flow != Gst.FlowReturn.OK:
+            _log.debug("IndentBeeper: push returned %s", flow)
+            return flow.value_nick
+        # End the clip, so the sink drains it and the bus tells us to close.
+        self._source.emit("end-of-stream")
+        return "ok"
 
     def shutdown(self) -> None:
         """Close the stream. Called when the extension is disabled."""
-        if self._pipeline is not None:
-            self._pipeline.set_state(Gst.State.NULL)
-        self._pipeline = None
+        pipeline, self._pipeline = self._pipeline, None
+        if pipeline is not None:
+            pipeline.set_state(Gst.State.NULL)
+            bus = pipeline.get_bus()
+            if bus is not None:
+                # Otherwise the watch keeps a GSource -- and this object --
+                # alive for the rest of the session.
+                bus.remove_signal_watch()
         self._source = None
         self._volume = None
+        self._sink_element = None
 
 
-def _configure_sink(element: Gst.Element) -> tuple[str, object]:
-    """Set up the real sink for short, responsive sounds.
+def _as_clip(pcm: bytes) -> Gst.Buffer:
+    """Wrap PCM as a clip that starts at zero and knows how long it is.
 
-    Sync is deliberately *not* touched -- see the module docstring. What is set
-    is the buffering, because the default is sized for playing music and would
-    leave the beep a fifth of a second behind the key that caused it.
+    Without the duration the sink has no idea how much time the buffer
+    occupies, drains nothing, and posts EOS immediately -- which the EOS
+    handler turns into a closed device and a beep nobody hears.
+    """
+    buffer = Gst.Buffer.new_wrapped(pcm)
+    buffer.pts = 0
+    buffer.dts = 0
+    frames = len(pcm) // 4            # stereo, 16-bit
+    buffer.duration = frames * Gst.SECOND // SAMPLE_RATE
+    return buffer
 
-    Returns (name, sync) for whatever it reached, so a failure to descend into
-    the bin shows up in the log instead of silently leaving the defaults.
+
+def _descend_to_sink(element: Gst.Element) -> tuple[Gst.Element | None, str]:
+    """Find the real sink inside autoaudiosink's bin.
+
+    Nothing is configured on it any more. ``buffer-time`` and ``latency-time``
+    used to be forced to 100 ms and 10 ms here, on the reasoning that the
+    defaults are sized for music; measured on an A2DP sink that halved its
+    ring buffer, and neither setting survives a pipeline that returns to NULL
+    between tones anyway. ``audio_themes`` sets neither and is the add-on that
+    works.
+
+    Returns (element, name), so a failure to descend shows up in the log.
     """
     if isinstance(element, Gst.Bin):
         iterator = element.iterate_sinks()
-        while True:
-            result, child = iterator.next()
-            if result != Gst.IteratorResult.OK:
-                break
-            return _configure_sink(child)
-        return (element.get_name(), "no-child-sink")
-    for name, value in (("buffer-time", 100_000), ("latency-time", 10_000)):
-        try:
-            element.set_property(name, value)
-        except Exception:  # pylint: disable=broad-exception-caught
-            pass
-    try:
-        return (element.get_name(), element.get_property("sync"))
-    except Exception as error:  # pylint: disable=broad-exception-caught
-        return (element.get_name(), f"unreadable ({error})")
+        result, child = iterator.next()
+        if result != Gst.IteratorResult.OK:
+            return (None, element.get_name())
+        return _descend_to_sink(child)
+    return (element, element.get_name())

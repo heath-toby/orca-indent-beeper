@@ -54,13 +54,21 @@ RUN_EXTRA_MIN, RUN_EXTRA_MAX = 0, 200
 DEFAULT_MAX_DURATION_MS = 180
 MAX_DURATION_MIN, MAX_DURATION_MAX = 40, 1000
 
-# Raised-cosine fade at each end, in milliseconds. 0 reproduces NVDA's
-# generator exactly -- including the click it ends on, which is worst at the
-# top of the ladder. See tone.py.
-DEFAULT_FADE_MS = 4
+# Raised-cosine fade at each end, in milliseconds, and zero by default: the
+# tone now ends on a real zero crossing, so there is no edge for a fade to
+# cover and the ramp was audible on a flat-topped wave. See tone.py.
+DEFAULT_FADE_MS = 0
 FADE_MIN, FADE_MAX = 0, 20
 
-DEFAULT_VOLUME = 0.4
+# Matched to the Hammerspoon version Toby wrote for the Mac
+# (pitermach/IndentBeeper#5), which peaks at 0.21 of full scale. The generator
+# here peaks at AMPLITUDE/32767 = 0.427, and the beep is scaled again by
+# Orca's speech volume, so reaching 0.21 on his machine (speech at 4.6) needs
+# 0.427 x 1.1 x 0.46 = 0.216. That is why the default is above 1.0 and the
+# ceiling is 2.0: there is headroom to spare -- even 2.0 against a speech
+# volume of 10 peaks at 0.855, so nothing in range can clip.
+DEFAULT_VOLUME = 1.1
+VOLUME_MIN, VOLUME_MAX = 0.0, 2.0
 
 # Scale the beep by Orca's own speech volume, so turning Orca down turns the
 # beep down with it rather than leaving it shouting over a quiet voice.
@@ -160,7 +168,8 @@ class Config:
             "max-duration-ms", DEFAULT_MAX_DURATION_MS,
             MAX_DURATION_MIN, MAX_DURATION_MAX, int)
         self.fade_ms = number("fade-ms", DEFAULT_FADE_MS, FADE_MIN, FADE_MAX, int)
-        self.volume = number("volume", DEFAULT_VOLUME, 0.0, 1.0, float)
+        self.volume = number("volume", DEFAULT_VOLUME,
+                             VOLUME_MIN, VOLUME_MAX, float)
         self.follow_speech_volume = bool(
             settings.get("follow-speech-volume", DEFAULT_FOLLOW_SPEECH_VOLUME))
         self.beep_on_change_only = bool(

@@ -44,6 +44,15 @@ _DEBUG = os.environ.get("ORCA_INDENT_BEEPER_DEBUG", "").lower() in ("1", "true",
 _debug_log = None
 
 
+def _debug_on() -> bool:
+    """True if anything would be written to the debug log.
+
+    Worth asking before building a line that costs more than a format: the
+    lag figure below queries the pipeline.
+    """
+    return bool(_DEBUG or (_config is not None and _config.debug))
+
+
 def _debug(message: str) -> None:
     """Append a line to the debug log, if one was asked for.
 
@@ -168,14 +177,25 @@ def beep_for_line(line: str, source: str = "line", force: bool = False) -> None:
     if force:
         _last_units = None
     elif _config.beep_on_change_only:
-        if not line:
+        if not line.strip():
             # A line with nothing on it has no indentation because it has no
             # content, not because the code came back to the margin. Treating
-            # it as a change to zero would beep twice for every blank line in
-            # a file -- once down to the margin and once back -- and report a
+            # it as a change to zero beeps twice for every blank line in a
+            # file -- once down to the margin and once back -- and reports a
             # structural change that never happened. So leave the remembered
             # depth alone and say nothing; Orca already says "blank".
-            _debug(f"{source}: an empty line is not a change of indentation")
+            #
+            # The test is on the stripped line, and that matters. This used to
+            # read "if not line", which is almost never true: Orca hands
+            # speak_line the line with its terminator still on it, so a blank
+            # line arrives as "\n" and sailed straight past the guard. With
+            # trailing whitespace it arrived as "   \n" and sounded a pitch
+            # taken from whitespace nobody typed as indentation. 44 of 200
+            # beeps in Toby's log were lines with nothing on them, and each one
+            # also overwrote the remembered depth, which is what put the rest
+            # of the beeps in the wrong places.
+            _debug(f"{source}: a line with no content is not a change "
+                   f"of indentation ({line!r})")
             return
         if units == _last_units:
             _debug(f"{source}: units={units} unchanged, not beeping")
@@ -189,9 +209,12 @@ def beep_for_line(line: str, source: str = "line", force: bool = False) -> None:
     _apply_volume()
     frequency, duration = tone_for_config(units, _config)
     result = _player.play(_tone_for(units))
-    _debug(f"{source}: units={units} {frequency:.1f}Hz {duration}ms "
-           f"vol={_player.last_volume:.3f} push={result} "
-           f"state={_player.state_name} line={line[:40]!r}")
+    if _debug_on():
+        _debug(f"{source}: units={units} {frequency:.1f}Hz {duration}ms "
+               f"vol={_player.last_volume:.3f} push={result} "
+               f"state={_player.state_name} "
+               f"out={getattr(_player, 'device', '?')} "
+               f"line={line[:40]!r}")
 
 
 def beep_for_typed_indent(obj, changed_text: str) -> None:

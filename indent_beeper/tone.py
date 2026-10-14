@@ -10,10 +10,19 @@ a tone you are meant to hear *while* something is being read to you.
 The idea is NVDA's and the numbers below match it, because matching them is
 how it comes out sounding right. The implementation is this file's own.
 
-One detail is load-bearing and easy to miss. The tone's length is rounded
-*up* to a whole number of cycles, so the waveform begins and ends at a zero
-crossing. That is what keeps it from clicking, and it is why this does not
-need the fade in and out that a plain gated sine does.
+One detail is load-bearing and easy to miss: where the tone stops. A clipped
+wave spends two thirds of every cycle at full scale, so stopping at the wrong
+moment is a vertical edge straight to zero, and that clicks. NVDA rounds the
+length up to a whole number of cycles to avoid it, but rounds using a
+*truncated* samples-per-cycle while advancing the phase at the exact
+frequency, so the two drift apart and the tone stops wherever it stops. On
+this ladder 60 of the 73 rungs stopped above half scale and several stopped at
+exactly full scale.
+
+The length is now worked out from the exact frequency, which really does land
+on a zero crossing -- within 0.03 of zero on all but one rung. That is Toby's
+fix from pitermach/IndentBeeper#5, where he hit the same thing writing the
+Hammerspoon version, and it is better than patching the edge with a fade.
 """
 
 from __future__ import annotations
@@ -33,37 +42,38 @@ CLIP_GAIN = 2.0
 
 
 def samples_per_cycle(frequency: float) -> int:
-    """Whole samples in one cycle at this frequency, truncated as NVDA does."""
+    """Whole samples in one cycle at this frequency, truncated as NVDA does.
+
+    Kept because it is what NVDA's generator uses, and the waveform test
+    compares against NVDA. Nothing here sizes a tone with it any more: see
+    frame_count.
+    """
     return max(1, int(SAMPLE_RATE / frequency))
 
 
 def frame_count(frequency: float, duration_ms: int) -> int:
     """Frames in a tone, rounded up to a whole number of cycles.
 
-    Rounding up is what puts the end of the tone at a zero crossing. Asking
-    for 60 ms at 220 Hz gives 61.2 ms, and the extra is inaudible next to the
-    click you would get from stopping mid-cycle.
+    Worked out from the exact frequency rather than from a truncated
+    samples-per-cycle, so the last frame really is at a zero crossing. Asking
+    for 60 ms at 220 Hz gives 63.7 ms, and the extra is inaudible next to the
+    edge you would otherwise stop on.
     """
-    per_cycle = samples_per_cycle(frequency)
-    total = int(SAMPLE_RATE * duration_ms / 1000)
-    total += per_cycle - (total % per_cycle)
-    return total
+    cycles = math.ceil(duration_ms / 1000 * frequency)
+    # One past the final cycle, so the closing zero is actually sounded.
+    return int(cycles * SAMPLE_RATE / frequency + 0.5) + 1
 
 
-# Milliseconds of raised-cosine fade at each end. This is the one place where
-# this deliberately does not do what NVDA does, and the reason is measurable.
-# Rounding the length up to a whole number of cycles is *meant* to end the
-# tone at a zero crossing, but samples_per_cycle is a truncated integer while
-# the phase advances at the exact frequency, so the two drift apart and the
-# tone can stop anywhere in the cycle. At 1760 Hz it stops at full negative
-# scale -- a square edge, which clicks, and clipping has already put plenty of
-# high harmonics there for the click to hide in. The higher the pitch the worse
-# it gets, so the tone that clicks hardest is the one for the deepest indent.
+# Milliseconds of raised-cosine fade at each end, and now zero by default.
 #
-# Four milliseconds at each end of a 60 ms tone is a fifteenth of it and leaves
-# the timbre alone; what it removes is the edge. Set DEFAULT_FADE_MS to 0 to
-# get NVDA's generator sample for sample, which is what the test asserts.
-DEFAULT_FADE_MS = 4.0
+# The fade was here to hide an ending that landed on a full-scale edge, which
+# it did -- but 4 ms in and 4 ms out of a 60 ms tone is 13% of the tone spent
+# ramping, and on a wave that is already flat-topped the result is an envelope
+# you can hear. Toby's word for it was that the tone sounded "overly clipped".
+# Now that frame_count ends on an actual zero crossing there is no edge left to
+# hide, so the ramp goes. The parameter stays, because a fade is still the
+# right answer if anyone changes the length calculation back.
+DEFAULT_FADE_MS = 0.0
 
 
 def render(
