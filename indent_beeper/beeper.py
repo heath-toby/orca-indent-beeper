@@ -53,6 +53,33 @@ def _debug_on() -> bool:
     return bool(_DEBUG or (_config is not None and _config.debug))
 
 
+# Diagnostics get left on. A log that grows without bound for as long as that
+# setting is true is a trap, so the file is rolled past this size and one old
+# one is kept beside it as debug.log.1.
+_LOG_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _roll_log_if_large() -> None:
+    """Keep one old log and start a new one, if the current one is big."""
+    global _debug_log
+    path = os.path.join(_DATA_DIR, "debug.log")
+    try:
+        if os.path.getsize(path) < _LOG_MAX_BYTES:
+            return
+    except OSError:
+        return
+    try:
+        if _debug_log is not None:
+            _debug_log.close()
+    except OSError:
+        pass
+    _debug_log = None
+    try:
+        os.replace(path, path + ".1")
+    except OSError:
+        pass
+
+
 def _debug(message: str) -> None:
     """Append a line to the debug log, if one was asked for.
 
@@ -66,10 +93,13 @@ def _debug(message: str) -> None:
     try:
         if _debug_log is None:
             os.makedirs(_DATA_DIR, exist_ok=True)
+            _roll_log_if_large()
             _debug_log = open(os.path.join(_DATA_DIR, "debug.log"), "a")
         _debug_log.write(f"{time.strftime('%H:%M:%S')}.{int(time.time() * 1000) % 1000:03d} "
                          f"{message}\n")
         _debug_log.flush()
+        if _debug_log.tell() >= _LOG_MAX_BYTES:
+            _roll_log_if_large()
     except Exception:  # pylint: disable=broad-exception-caught
         pass
 
@@ -91,6 +121,7 @@ _last_units: int | None = None
 # be the same presentation arriving twice.
 _last_presentation: str | None = None
 _last_presentation_at: float = 0.0
+_last_presentation_source: str | None = None
 _PRESENTATION_WINDOW = 0.25
 
 # Rendered tones, keyed on the depth. Cleared whenever a setting that affects
@@ -256,18 +287,62 @@ def beep_for_line(line: str, source: str = "line", force: bool = False) -> None:
                f"line={line[:40]!r}")
 
 
-def _line_navigation_keypress() -> bool:
-    """True if the last keypress was one Orca would present a whole line for.
+# How recently the navigation keypress has to have happened for a presentation
+# to be attributed to it. Orca's own last_event_was_* helpers have no such
+# bound: they answer about the last input event however old it is, so a
+# presentation that no keypress caused -- focus moving on a timer, a dialog
+# opening by itself -- inherits the arrow key pressed before it. A keystroke
+# and the text-changed event it causes are milliseconds apart.
+_KEYPRESS_RECENCY = 1.0
 
-    These are the same reasons ``scripts/default.py`` routes to ``say_line``
-    -- line, page and file-boundary navigation -- plus paragraph navigation,
-    which a Writer user leans on and which also presents a line. Without this
-    gate, hooking the object path would beep for every focused text field and
-    every tab into an entry, because the same leaf generates their speech too.
+
+# The longest whitespace run a person types in one go. Beyond this it is a
+# program writing, not a keystroke.
+_MAX_TYPED_RUN = 8
+
+
+def _typing_keypress() -> bool:
+    """True if a recent keypress could have typed or removed an indent.
+
+    An indent is built with space, tab or return, and taken apart with
+    backspace; nothing else does it. Checking this before touching AT-SPI is
+    what stops the hook asking two questions of the accessibility bus for
+    every whitespace run any application writes anywhere in the session. In
+    one 90-second sample of Toby's, 147 such runs arrived from a terminal
+    printing indented output -- about one and a half a second, each costing a
+    caret-offset query and a line query to conclude "not typing".
     """
     try:
         from orca import input_event_manager
         manager = input_event_manager.get_manager()
+        if not manager.last_event_was_keyboard(within=_KEYPRESS_RECENCY):
+            return False
+        return bool(manager.last_event_was_return_tab_or_space()
+                    or manager.last_event_was_backspace())
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        _debug(f"typing: could not ask about the last keypress: {error}")
+        return False
+
+
+def _line_navigation_keypress() -> bool:
+    """True if a recent keypress was one Orca presents a whole line for.
+
+    These are the same reasons ``scripts/default.py`` routes to ``say_line``
+    -- line, page and file-boundary navigation -- plus paragraph navigation,
+    which a Writer user leans on and which also presents a line. Without this
+    gate, hooking the object path would beep for every focused text field,
+    because the same leaf generates their speech too.
+
+    A mouse click in between closes the gate on its own: Orca's helpers go
+    through ``_last_key_and_modifiers``, which returns nothing once the last
+    input event is not a keyboard event. The recency bound is for the case
+    with no intervening input event at all.
+    """
+    try:
+        from orca import input_event_manager
+        manager = input_event_manager.get_manager()
+        if not manager.last_event_was_keyboard(within=_KEYPRESS_RECENCY):
+            return False
         return bool(manager.last_event_was_line_navigation()
                     or manager.last_event_was_paragraph_navigation()
                     or manager.last_event_was_page_navigation()
@@ -278,15 +353,28 @@ def _line_navigation_keypress() -> bool:
 
 
 def beep_for_presented_line(line: str, source: str) -> None:
-    """Beep for a line being read, dropping the same presentation twice over."""
-    global _last_presentation, _last_presentation_at
+    """Beep for a line being read, dropping one presentation seen twice.
+
+    Only a *different* hook reporting the same line counts as a duplicate.
+    That is the thing being guarded against: both line paths firing for one
+    presentation. Two arrivals from the same hook are two presentations --
+    holding Down through a run of identical lines, blank ones or a repeated
+    ``}`` -- and with beep-on-change-only switched off the user has asked for
+    a tone on each. An earlier version suppressed those too, which silently
+    turned "beep for every line" into "beep at most once every 250ms", and at
+    a repeat rate of 20 a second that is three lines in four going quiet.
+    """
+    global _last_presentation, _last_presentation_at, _last_presentation_source
     now = time.monotonic()
-    if line == _last_presentation and now - _last_presentation_at < _PRESENTATION_WINDOW:
-        _debug(f"{source}: same line again within "
-               f"{int((now - _last_presentation_at) * 1000)}ms, already decided")
+    if (line == _last_presentation
+            and source != _last_presentation_source
+            and now - _last_presentation_at < _PRESENTATION_WINDOW):
+        _debug(f"{source}: {_last_presentation_source} already decided this "
+               f"line {int((now - _last_presentation_at) * 1000)}ms ago")
         return
     _last_presentation = line
     _last_presentation_at = now
+    _last_presentation_source = source
     beep_for_line(line, source=source)
 
 
@@ -351,6 +439,15 @@ def beep_for_typed_indent(obj, changed_text: str) -> None:
     if not changed_text or changed_text.strip(" \t\u00a0"):
         # Not a whitespace edit, so it is not an indentation edit.
         return
+    if len(changed_text) > _MAX_TYPED_RUN:
+        # Nobody types eight spaces in one event. A whitespace run this long
+        # arrived from a program writing to a text object -- a terminal
+        # printing indented output, most often -- and asking AT-SPI about it
+        # is two round trips spent to learn that it is not typing.
+        return
+    if not _typing_keypress():
+        _debug(f"typing: no recent typing keypress, not asking about {changed_text!r}")
+        return
     try:
         from orca.ax_text import AXText
         offset = AXText.get_caret_offset(obj)
@@ -386,9 +483,11 @@ def beep_for_typed_indent(obj, changed_text: str) -> None:
 def install(config: Config) -> None:
     """Start beeping. Must be called from the main thread."""
     global _config, _player, _last_units, _last_presentation
+    global _last_presentation_source
     if _patched:
         return
     _last_presentation = None
+    _last_presentation_source = None
     _config = config
     _last_units = None
     _player = TonePlayer()
@@ -446,9 +545,17 @@ def install(config: Config) -> None:
     # line has to hook both or it is silent in every application whose lines
     # are separate accessible objects -- LibreOffice Writer among them.
     #
-    # Patched on the base class: LibreOffice's generator overrides this method
-    # but calls super() in both of its branches, so the base-class patch is
-    # still reached. Checked rather than assumed.
+    # Patched on the base class, which LibreOffice's generator reaches through
+    # super() -- but not from every branch, and the earlier version of this
+    # comment claimed otherwise. soffice/speech_generator.py has three exits:
+    # a combo box delegates to super() with its text-input child or returns
+    # [] with no child; an object supporting text whose line is empty returns
+    # [messages.BLANK] without calling super(); and everything else calls
+    # super(). So an empty Writer paragraph never reaches this hook. That
+    # costs nothing, because a blank line has no indentation to report and
+    # both beep_for_object_line and beep_for_line would have suppressed it --
+    # but "calls super() in both of its branches" was simply untrue, and the
+    # next person to extend this would have trusted it.
     try:
         from orca import speech_generator as _speech_generator
 
@@ -499,9 +606,11 @@ def install(config: Config) -> None:
 def uninstall() -> None:
     """Stop beeping and close the audio stream."""
     global _config, _player, _cache_identity, _last_units, _last_presentation
+    global _last_presentation_source
     _unpatch_all()
     _last_units = None
     _last_presentation = None
+    _last_presentation_source = None
     if _player is not None:
         _player.shutdown()
     _player = None

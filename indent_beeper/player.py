@@ -161,13 +161,30 @@ class TonePlayer:
         is only what was asked for, which is nothing. It is empty between
         tones now that the device is closed after each one, so the log shows
         it for the tone that is sounding.
+
+        The sink is resolved **here**, not at construction. ``autoaudiosink``
+        holds a placeholder named ``fake-audio-sink`` until it profiles the
+        hardware on the way to PLAYING, and a ``fakesink`` has no
+        ``current-device`` property at all -- so reading the element captured
+        at construction raised every time and printed ``out=?`` in every beep
+        line this add-on has ever logged. ``describe()`` was fixed for the
+        same reason; this is the same defect one property along.
         """
-        if self._sink_element is None:
+        element = self._current_sink()
+        if element is None:
             return "?"
         try:
-            return self._sink_element.get_property("current-device") or "closed"
+            return element.get_property("current-device") or "closed"
         except Exception:  # pylint: disable=broad-exception-caught
             return "?"
+
+    def _current_sink(self) -> Gst.Element | None:
+        """The sink autoaudiosink is using now, not the one it started with."""
+        if self._sink_bin is not None:
+            element, _name = _descend_to_sink(self._sink_bin)
+            if element is not None:
+                return element
+        return self._sink_element
 
     def describe(self) -> str:
         """What this player actually ended up being, for the log.
@@ -181,6 +198,12 @@ class TonePlayer:
         which reads exactly like "the beep is going nowhere" and is not true.
         An instrument that lies about itself is worse than no instrument.
         """
+        if self._pipeline is None:
+            # Nothing is open, so there is no sink to name. Printing the one
+            # captured at construction would be a stale name beside
+            # state=none, which is the same lie in a quieter voice.
+            return (f"sink=none state={self.state_name} "
+                    f"rate={SAMPLE_RATE} lifecycle=playing-then-null")
         name = self._sink_name
         if self._sink_bin is not None:
             _element, current = _descend_to_sink(self._sink_bin)
@@ -241,6 +264,12 @@ class TonePlayer:
         self._source = None
         self._volume = None
         self._sink_element = None
+        # A GStreamer child holds a reference to its parent, so keeping the
+        # autoaudiosink bin here would keep the whole pipeline alive for the
+        # rest of the session -- exactly what removing the bus signal watch
+        # above is for. It also made describe() print a live sink name beside
+        # state=none.
+        self._sink_bin = None
 
 
 def _as_clip(pcm: bytes) -> Gst.Buffer:

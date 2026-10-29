@@ -289,6 +289,55 @@ os.remove(out)
 from orca.ax_text import AXText  # noqa: E402
 from indent_beeper import beeper as B  # noqa: E402
 
+import orca.input_event_manager as _iem  # noqa: E402
+
+
+class FakeEventManager:
+    """Answers the questions the two gates ask about the last keypress.
+
+    Both gates exist to keep the hooks off the accessibility bus when nothing
+    a person did could have caused the event. The reading gate asks whether
+    the last key was line navigation; the typing gate asks whether it could
+    have typed or removed an indent. Both also require it to be *recent*,
+    because Orca's own helpers answer about the last input event however old.
+    """
+
+    def __init__(self, line=False, paragraph=False, page=False, boundary=False,
+                 typing=False, keyboard=True):
+        self.line, self.paragraph, self.page = line, paragraph, page
+        self.boundary, self.typing, self.keyboard = boundary, typing, keyboard
+
+    def last_event_was_keyboard(self, within=None):
+        return self.keyboard
+
+    def last_event_was_line_navigation(self):
+        return self.line
+
+    def last_event_was_paragraph_navigation(self):
+        return self.paragraph
+
+    def last_event_was_page_navigation(self):
+        return self.page
+
+    def last_event_was_file_boundary_navigation(self):
+        return self.boundary
+
+    def last_event_was_return_tab_or_space(self):
+        return self.typing
+
+    def last_event_was_backspace(self):
+        return self.typing
+
+
+def set_last_event(**kwargs):
+    manager = FakeEventManager(**kwargs)
+    _iem.get_manager = lambda: manager
+
+
+# The typing rows below are all about a person typing an indent, so the gate
+# is open for them.
+set_last_event(typing=True, line=True)
+
 class FakeLine:
     """Stands in for a text object showing one line, with a caret in it."""
     def __init__(self, text, caret):
@@ -562,33 +611,6 @@ check("...and playing afterwards is a no-op, not a crash",
 # are separate accessibles, so reading a Writer document took the second path
 # and was silent -- 158 log lines from Toby's session held 147 from the typing
 # hook and not one from say-line.
-import orca.input_event_manager as _iem  # noqa: E402
-
-
-class FakeEventManager:
-    """Answers the four "was that a line navigation key" questions."""
-
-    def __init__(self, line=False, paragraph=False, page=False, boundary=False):
-        self._answers = (line, paragraph, page, boundary)
-
-    def last_event_was_line_navigation(self):
-        return self._answers[0]
-
-    def last_event_was_paragraph_navigation(self):
-        return self._answers[1]
-
-    def last_event_was_page_navigation(self):
-        return self._answers[2]
-
-    def last_event_was_file_boundary_navigation(self):
-        return self._answers[3]
-
-
-def set_last_event(**kwargs):
-    manager = FakeEventManager(**kwargs)
-    _iem.get_manager = lambda: manager
-
-
 B._player = FakePlayer()
 B._config = cfg.Config.load(Settings())
 B._config.beep_on_change_only = False
@@ -626,6 +648,12 @@ check("and neither does an object with no line at the caret",
       object_line(""), None)
 
 
+check("a navigation key that is no longer recent does not beep",
+      (set_last_event(line=True, keyboard=False), object_line("\tword"))[1],
+      None)
+set_last_event(line=True)
+
+
 def failing_manager():
     raise RuntimeError("no manager")
 
@@ -653,7 +681,52 @@ B.beep_for_presented_line("\t\tword", "test-d")
 check("...and the same line after the window is a new presentation",
       len(played), 3)
 
+# Two arrivals from the *same* hook are two presentations, not one seen
+# twice -- holding Down through a run of identical lines. Suppressing those
+# turned "beep for every line" into "beep at most once every 250ms", which at
+# a repeat rate of 20 a second silences three lines in four.
+played.clear()
 B._last_presentation = None
+B._last_presentation_source = None
+B.beep_for_presented_line("}\n", "say-line")
+B.beep_for_presented_line("}\n", "say-line")
+B.beep_for_presented_line("}\n", "say-line")
+check("the same line from the same hook is a beep each time", len(played), 3)
+played.clear()
+B.beep_for_presented_line("}\n", "object-line")
+check("...but from the other hook it is the one presentation again",
+      len(played), 0)
+
+B._last_presentation = None
+
+# --- the typing hook must not interrogate AT-SPI for other people's text ---
+# It fires on any pure-whitespace insertion anywhere in the session. In one
+# 90-second sample 147 of them came from a terminal printing indented output,
+# each costing a caret query and a line query to conclude "not typing".
+B._config = cfg.Config.load(Settings())
+B._player = FakePlayer()
+
+
+def typed_now(text, caret, changed):
+    played.clear()
+    B._last_units = None
+    B.beep_for_typed_indent(FakeLine(text, caret), changed)
+    return len(played)
+
+
+set_last_event(typing=True)
+check("a typed space still beeps", typed_now(" x", 1, " "), 1)
+set_last_event(typing=False)
+check("...but whitespace arriving with no typing keypress does not",
+      typed_now(" x", 1, " "), 0)
+set_last_event(keyboard=False, typing=True)
+check("...nor when the keypress is too old to have caused it",
+      typed_now(" x", 1, " "), 0)
+set_last_event(typing=True)
+check("a whitespace run longer than anyone types is not typing",
+      typed_now(" " * 20 + "x", 20, " " * 20), 0)
+check("...while a run short enough to be typed is",
+      typed_now("    x", 4, "    "), 1)
 
 width_name = max(len(r[0]) for r in rows)
 for name, want, got, status in rows:

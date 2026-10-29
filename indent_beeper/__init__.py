@@ -7,7 +7,7 @@ is written inside the package -- the tones are generated into memory -- so
 there is no data directory to keep outside it.
 """
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 import logging
 
@@ -80,7 +80,7 @@ class IndentBeeper(Extension):
         "space of indentation and four for every tab, so the depth of a line "
         "is heard rather than counted out."
     )
-    VERSION = "1.4.0"  # keep in sync with __version__; read by AST, must be a literal
+    VERSION = "1.5.0"  # keep in sync with __version__; read by AST, must be a literal
     AUTHOR = "Toby"
 
     def __init__(self) -> None:

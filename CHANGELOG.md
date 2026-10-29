@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.5.0
+
+Six fixes from a code review of 1.4.0.
+
+**"Beep for every line" had quietly become "beep at most once every 250 ms".**
+1.4.0 added a stutter guard, because both line-presentation paths can fire for
+one presentation. But it keyed on the line text alone, so two *genuine*
+presentations of the same text — holding Down through blank lines, a run of
+`}`, a repeated table row — counted as one. With beep-on-change-only switched
+off, which is the mode that exists to beep per line, a repeat rate of 20 a
+second silenced three lines in four. Only a *different* hook reporting the same
+line is a duplicate now.
+
+**The typing hook interrogated AT-SPI about other people's text.** It fires on
+any pure-whitespace insertion anywhere in the session and then asks for the
+caret offset and the line before concluding "not typing". In one 90-second
+sample, 147 of those arrived from a terminal printing indented output — about
+one and a half a second, two accessibility round trips each. Two free checks
+now come first: a whitespace run longer than eight characters is a program
+writing rather than a person typing, and the last keypress must have been
+recent and must have been space, tab, return or backspace, which are the only
+keys that build or remove an indent.
+
+**The reading gate had no recency bound.** Orca's `last_event_was_*` helpers
+answer about the last input event however old it is, so a presentation that no
+keypress caused — focus moving on a timer, a dialog opening by itself —
+inherited the arrow key pressed before it. A keystroke and the event it causes
+are milliseconds apart, so both gates now require the keypress to be within a
+second. A mouse click in between already closed the gate on its own, because
+Orca's helpers return nothing once the last input event is not a keyboard
+event.
+
+**`device` reported `?` in every beep line ever logged.** 1.4.0 fixed
+`describe()` to re-resolve the sink, having found that `autoaudiosink` holds a
+placeholder until it profiles the hardware — and left the identical defect one
+property along. `current-device` was read from the element captured at
+construction, which is a `fakesink` and has no such property, so the read
+raised every time. It resolves the sink when asked now, and reports the real
+output. `describe()` also no longer prints a stale sink name after shutdown.
+
+**`shutdown()` kept the pipeline alive for the session.** The autoaudiosink bin
+added in 1.4.0 was not cleared, and a GStreamer child holds a reference to its
+parent — the same leak that removing the bus signal watch is there to prevent.
+
+**A load-bearing comment was false.** It said LibreOffice's generator "calls
+super() in both of its branches, so the base-class patch is still reached.
+Checked rather than assumed." There are three exits, and an object supporting
+text whose line is empty returns `[messages.BLANK]` without calling super() at
+all. Nothing misbehaves — a blank line has no indentation to report and two
+separate guards would have suppressed it — but the comment is the reason the
+patch sits where it does, and the next person would have trusted it.
+
+Also: the debug log rolls past 2MB, keeping one previous log as `debug.log.1`,
+because diagnostics get left on. 136 test rows, up from 128.
+
 ## 1.4.0
 
 **Reading a LibreOffice Writer document was completely silent.** Reported by
