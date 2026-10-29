@@ -555,6 +555,106 @@ check("...and the player stops claiming to be available", player.available, Fals
 check("...and playing afterwards is a no-op, not a crash",
       player.play(short), "no-source")
 
+# --- the other line-presentation path ------------------------------------
+# Orca presents a line two ways and its own TODO says so: speak_line, which
+# covers arrowing within one text object, and _generate_text_line, used by
+# present_object for an object that *is* a line. LibreOffice Writer paragraphs
+# are separate accessibles, so reading a Writer document took the second path
+# and was silent -- 158 log lines from Toby's session held 147 from the typing
+# hook and not one from say-line.
+import orca.input_event_manager as _iem  # noqa: E402
+
+
+class FakeEventManager:
+    """Answers the four "was that a line navigation key" questions."""
+
+    def __init__(self, line=False, paragraph=False, page=False, boundary=False):
+        self._answers = (line, paragraph, page, boundary)
+
+    def last_event_was_line_navigation(self):
+        return self._answers[0]
+
+    def last_event_was_paragraph_navigation(self):
+        return self._answers[1]
+
+    def last_event_was_page_navigation(self):
+        return self._answers[2]
+
+    def last_event_was_file_boundary_navigation(self):
+        return self._answers[3]
+
+
+def set_last_event(**kwargs):
+    manager = FakeEventManager(**kwargs)
+    _iem.get_manager = lambda: manager
+
+
+B._player = FakePlayer()
+B._config = cfg.Config.load(Settings())
+B._config.beep_on_change_only = False
+
+
+def object_line(text, caret=0):
+    """The depth beeped for presenting an object whose line is `text`."""
+    played.clear()
+    B._last_presentation = None
+    B.beep_for_object_line(FakeLine(text, caret), source="test-object")
+    if not played:
+        return None
+    for units in range(0, 400):
+        if len(B._tone_for(units)) == played[0]:
+            return units
+    return "?"
+
+
+set_last_event(line=True)
+check("arrowing by line beeps for an object's line", object_line("\tword"), 4)
+check("...and an unindented one is the bottom of the ladder",
+      object_line("word"), 0)
+set_last_event(paragraph=True)
+check("paragraph navigation beeps too", object_line("\t\tword"), 8)
+set_last_event(page=True)
+check("so does page navigation", object_line("\tword"), 4)
+set_last_event(boundary=True)
+check("so does jumping to the start or end of the file",
+      object_line("\tword"), 4)
+set_last_event()
+check("but a keypress that is not line navigation does not beep",
+      object_line("\tword"), None)
+set_last_event(line=True)
+check("and neither does an object with no line at the caret",
+      object_line(""), None)
+
+
+def failing_manager():
+    raise RuntimeError("no manager")
+
+
+_iem.get_manager = failing_manager
+check("a manager that raises closes the gate rather than beeping",
+      object_line("\tword"), None)
+set_last_event(line=True)
+
+# --- the same presentation arriving twice ---------------------------------
+# Both paths can fire for one presentation, and several _generate_text_line
+# calls can happen within one. That is a stutter, not two beeps.
+B._config.beep_on_change_only = False
+B._last_presentation = None
+played.clear()
+B.beep_for_presented_line("\tword", "test-a")
+first = len(played)
+B.beep_for_presented_line("\tword", "test-b")
+check("the same line again straight away is one beep, not two",
+      (first, len(played)), (1, 1))
+B.beep_for_presented_line("\t\tword", "test-c")
+check("...but a different line is its own beep", len(played), 2)
+B._last_presentation_at -= B._PRESENTATION_WINDOW + 0.01
+B.beep_for_presented_line("\t\tword", "test-d")
+check("...and the same line after the window is a new presentation",
+      len(played), 3)
+
+B._last_presentation = None
+
 width_name = max(len(r[0]) for r in rows)
 for name, want, got, status in rows:
     print(f"  {status:4s} {name:<{width_name}}  want={want}  got={got}")

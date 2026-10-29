@@ -1,5 +1,67 @@
 # Changelog
 
+## 1.4.0
+
+**Reading a LibreOffice Writer document was completely silent.** Reported by
+Toby: *"Not a single beep when reading, but every beep is correct when
+writing."*
+
+**Orca has two code paths for presenting a line,** and says so itself, in a
+TODO above `SpeechGenerator.generate_line`:
+
+> generate_line duplicates _generate_text_line. speak_line (the sole caller of
+> generate_line) should be consolidated with the _generate_text_line path used
+> by present_object/generate_speech so there is one code path for line
+> presentation.
+
+1.3.0 hooked only the first. `speak_line` covers arrowing within a single text
+object, which is what a terminal is — hence a terminal being perfect. A
+LibreOffice Writer paragraph is its own accessible, so moving between
+paragraphs presents a different *object* each time and goes through
+`_generate_text_line`, where there was no hook at all. The debug log settled it
+in one reading: of 158 lines from Toby's session, 147 came from the typing hook
+and **not one** from `say-line`.
+
+- **Hooks `_generate_text_line` as well.** Patched on the base
+  `SpeechGenerator`: LibreOffice's generator overrides the method but calls
+  `super()` in both of its branches, so the base-class patch is still reached.
+  Checked rather than assumed.
+
+- **Gated on the last keypress having been line navigation** — line, page or
+  file-boundary navigation, which are the reasons `scripts/default.py` routes
+  to `say_line`, plus paragraph navigation, which a Writer user leans on and
+  which also presents a line. Without the gate this leaf would beep for every
+  focused text field and every tab into an entry, because it generates their
+  speech too. A manager that raises closes the gate rather than beeping.
+
+- **The same presentation arriving twice is one beep.** Both paths can fire for
+  a single presentation, and several `_generate_text_line` calls can happen
+  within one; an identical line inside 250 ms is taken to be the same
+  presentation rather than a second one. That is a stutter guard, and it is
+  separate from the change gate, which still decides whether a *different*
+  depth is worth a tone.
+
+- The line is read at the caret rather than taken from the generator, which
+  computes its text several different ways depending on the object. The leading
+  whitespace is the whole point here, and the line at the caret always has it.
+
+Also: the debug log now records the line it suppressed on the "unchanged" path,
+and every `say-line` records the line Orca handed over beside the line the
+object holds at that moment, flagged `same` or `DIFFERENT`. Without that the
+three possible explanations for a missing beep were indistinguishable, which is
+why this took a second attempt.
+
+Also fixed: `TonePlayer.describe()` reported the sink name captured at
+construction, and `autoaudiosink` has not chosen a real sink while the pipeline
+is at NULL — it holds a placeholder named `fake-audio-sink` until it profiles
+the hardware on the way to PLAYING. So every log this add-on has ever written
+said `sink=fake-audio-sink`, which reads exactly like "the beep is going
+nowhere" and was never true. The name is now re-read when asked for: at NULL it
+still says `fake-audio-sink`, and after one tone it says
+`sink-actual-sink-pulse`.
+
+128 test rows, up from 117.
+
 ## 1.3.0
 
 **The tone stops where it should, and lines with nothing on them stay quiet.** Two faults

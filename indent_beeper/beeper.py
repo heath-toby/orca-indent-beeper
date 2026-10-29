@@ -84,6 +84,15 @@ _player: TonePlayer | None = None
 # on the very first line of a session -- there is nothing to have changed from.
 _last_units: int | None = None
 
+# The last line a reading hook decided about, and when. There are two code
+# paths for presenting a line (see beep_for_object_line) and for some
+# presentations both of them fire, as can several calls within one. A beep per
+# call would be a stutter, so an identical line inside this window is taken to
+# be the same presentation arriving twice.
+_last_presentation: str | None = None
+_last_presentation_at: float = 0.0
+_PRESENTATION_WINDOW = 0.25
+
 # Rendered tones, keyed on the depth. Cleared whenever a setting that affects
 # the sound changes, which _cache_identity detects without this having to know
 # which setting moved.
@@ -152,6 +161,35 @@ def _tone_for(units: int) -> bytes:
     return pcm
 
 
+def _line_context(obj, start_offset: int, line: str) -> str:
+    """What Orca handed us, beside what the object says right now.
+
+    For the LibreOffice Writer report: moving to the next paragraph often
+    beeps nothing, and then arrowing up and back down beeps, "as though it's a
+    delayed response". Two explanations fit that and they need different fixes,
+    so the log has to tell them apart:
+
+    * the line arrives **stale or blank** on first arrival, so its measured
+      depth is wrong and the change-gate suppresses a beep that was due; or
+    * the line is right and the gate is right, and something else is eating
+      the presentation.
+
+    Re-reading the line from the object at the caret distinguishes them. Built
+    only when the log is on, because it costs two AT-SPI round trips.
+    """
+    try:
+        from orca.ax_text import AXText
+        from orca.ax_object import AXObject
+        caret = AXText.get_caret_offset(obj)
+        fresh = AXText.get_line_at_offset(obj, max(0, caret))[0]
+        role = AXObject.get_role_name(obj)
+        same = "same" if fresh == line else "DIFFERENT"
+        return (f"role={role} caret={caret} start={start_offset} "
+                f"handed={line[:40]!r} fresh={(fresh or '')[:40]!r} {same}")
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        return f"context unavailable: {type(error).__name__}: {error}"
+
+
 def beep_for_line(line: str, source: str = "line", force: bool = False) -> None:
     """Sound the tone for a line's indentation. Safe to call for any line.
 
@@ -198,7 +236,8 @@ def beep_for_line(line: str, source: str = "line", force: bool = False) -> None:
                    f"of indentation ({line!r})")
             return
         if units == _last_units:
-            _debug(f"{source}: units={units} unchanged, not beeping")
+            _debug(f"{source}: units={units} unchanged, not beeping "
+                   f"line={line[:40]!r}")
             return
         _last_units = units
     else:
@@ -215,6 +254,81 @@ def beep_for_line(line: str, source: str = "line", force: bool = False) -> None:
                f"state={_player.state_name} "
                f"out={getattr(_player, 'device', '?')} "
                f"line={line[:40]!r}")
+
+
+def _line_navigation_keypress() -> bool:
+    """True if the last keypress was one Orca would present a whole line for.
+
+    These are the same reasons ``scripts/default.py`` routes to ``say_line``
+    -- line, page and file-boundary navigation -- plus paragraph navigation,
+    which a Writer user leans on and which also presents a line. Without this
+    gate, hooking the object path would beep for every focused text field and
+    every tab into an entry, because the same leaf generates their speech too.
+    """
+    try:
+        from orca import input_event_manager
+        manager = input_event_manager.get_manager()
+        return bool(manager.last_event_was_line_navigation()
+                    or manager.last_event_was_paragraph_navigation()
+                    or manager.last_event_was_page_navigation()
+                    or manager.last_event_was_file_boundary_navigation())
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        _debug(f"gate: could not ask about the last keypress: {error}")
+        return False
+
+
+def beep_for_presented_line(line: str, source: str) -> None:
+    """Beep for a line being read, dropping the same presentation twice over."""
+    global _last_presentation, _last_presentation_at
+    now = time.monotonic()
+    if line == _last_presentation and now - _last_presentation_at < _PRESENTATION_WINDOW:
+        _debug(f"{source}: same line again within "
+               f"{int((now - _last_presentation_at) * 1000)}ms, already decided")
+        return
+    _last_presentation = line
+    _last_presentation_at = now
+    beep_for_line(line, source=source)
+
+
+def beep_for_object_line(obj, source: str = "object-line") -> None:
+    """Beep for the line of a text object Orca is presenting.
+
+    **Orca has two code paths for presenting a line,** and its own source says
+    so, in a TODO above ``SpeechGenerator.generate_line``:
+
+        generate_line duplicates _generate_text_line. speak_line (the sole
+        caller of generate_line) should be consolidated with the
+        _generate_text_line path used by present_object/generate_speech so
+        there is one code path for line presentation.
+
+    ``speak_line`` covers arrowing within a single text object, which is what
+    a terminal is. A LibreOffice Writer paragraph is its own accessible, so
+    moving between paragraphs presents a different *object* each time and goes
+    through ``_generate_text_line`` instead -- where there was no hook, so
+    reading a Writer document was entirely silent while a terminal was
+    perfect. Toby: *"Not a single beep when reading, but every beep is correct
+    when writing."* 158 log lines from that session contained 147 from the
+    typing hook and not one from ``say-line``.
+
+    The line is read at the caret rather than taken from the generator, which
+    computes its text several ways depending on the object; the leading
+    whitespace is what matters here and the line at the caret always has it.
+    """
+    if _config is None or not _config.enabled:
+        return
+    if not _line_navigation_keypress():
+        return
+    try:
+        from orca.ax_text import AXText
+        caret = AXText.get_caret_offset(obj)
+        line = AXText.get_line_at_offset(obj, max(0, caret))[0]
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        _debug(f"{source}: could not read the line: {type(error).__name__}: {error}")
+        return
+    if not line:
+        _debug(f"{source}: no line at the caret")
+        return
+    beep_for_presented_line(line, source)
 
 
 def beep_for_typed_indent(obj, changed_text: str) -> None:
@@ -271,9 +385,10 @@ def beep_for_typed_indent(obj, changed_text: str) -> None:
 
 def install(config: Config) -> None:
     """Start beeping. Must be called from the main thread."""
-    global _config, _player, _last_units
+    global _config, _player, _last_units, _last_presentation
     if _patched:
         return
+    _last_presentation = None
     _config = config
     _last_units = None
     _player = TonePlayer()
@@ -287,7 +402,9 @@ def install(config: Config) -> None:
         # Before the original, so the tone leads the line rather than landing
         # on top of the first word of it.
         try:
-            beep_for_line(line, source="say-line")
+            if _debug_on():
+                _debug(f"say-line: {_line_context(obj, start_offset, line)}")
+            beep_for_presented_line(line, "say-line")
         except Exception as error:  # pylint: disable=broad-exception-caught
             _log.warning("IndentBeeper: %s", error)
             _debug(f"say-line: ERROR {type(error).__name__}: {error}")
@@ -324,6 +441,33 @@ def install(config: Config) -> None:
         _log.warning("IndentBeeper: could not patch flat review: %s", error)
         _debug(f"flat review hook FAILED: {error}")
 
+    # The other line-presentation path. Orca's own TODO says there are two and
+    # that they should be one; until they are, an extension that beeps for a
+    # line has to hook both or it is silent in every application whose lines
+    # are separate accessible objects -- LibreOffice Writer among them.
+    #
+    # Patched on the base class: LibreOffice's generator overrides this method
+    # but calls super() in both of its branches, so the base-class patch is
+    # still reached. Checked rather than assumed.
+    try:
+        from orca import speech_generator as _speech_generator
+
+        generator_class = _speech_generator.SpeechGenerator
+        original_text_line = generator_class._generate_text_line
+
+        def _patched_text_line(self, obj):
+            try:
+                beep_for_object_line(obj, source="object-line")
+            except Exception as error:  # pylint: disable=broad-exception-caught
+                _debug(f"object-line: ERROR {type(error).__name__}: {error}")
+            return original_text_line(self, obj)
+
+        _patch(generator_class, "_generate_text_line", _patched_text_line)
+        _debug("installed the object-line hook")
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        _log.warning("IndentBeeper: could not patch the object line path: %s", error)
+        _debug(f"object-line hook FAILED: {error}")
+
     # Typing the indentation is a different act from reading it, so it gets
     # its own hooks: the text-changed handlers, which is where Orca learns
     # what was inserted or deleted and where.
@@ -354,9 +498,10 @@ def install(config: Config) -> None:
 
 def uninstall() -> None:
     """Stop beeping and close the audio stream."""
-    global _config, _player, _cache_identity, _last_units
+    global _config, _player, _cache_identity, _last_units, _last_presentation
     _unpatch_all()
     _last_units = None
+    _last_presentation = None
     if _player is not None:
         _player.shutdown()
     _player = None

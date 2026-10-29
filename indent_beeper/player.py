@@ -82,6 +82,7 @@ class TonePlayer:
         self._volume: Gst.Element | None = None
         self._sink_element: Gst.Element | None = None
         self._sink_name = "?"
+        self._sink_bin = None
         self.last_volume = 0.0
         self._build()
 
@@ -118,6 +119,7 @@ class TonePlayer:
         bus.connect("message::error", self._on_error)
         bus.connect("message::warning", self._on_warning)
 
+        self._sink_bin = sink
         self._sink_element, self._sink_name = _descend_to_sink(sink)
 
     def _on_eos(self, _bus: Gst.Bus, _message: Gst.Message) -> None:
@@ -168,8 +170,23 @@ class TonePlayer:
             return "?"
 
     def describe(self) -> str:
-        """What this player actually ended up being, for the log."""
-        return (f"sink={self._sink_name} state={self.state_name} "
+        """What this player actually ended up being, for the log.
+
+        The sink name is re-read here rather than reported from construction.
+        ``autoaudiosink`` has not chosen a real sink while the pipeline is at
+        NULL; it holds a placeholder named ``fake-audio-sink`` until it
+        profiles the hardware on the way to PLAYING. Reporting the name
+        captured at construction therefore printed
+        ``sink=fake-audio-sink`` in every log this add-on has ever written,
+        which reads exactly like "the beep is going nowhere" and is not true.
+        An instrument that lies about itself is worse than no instrument.
+        """
+        name = self._sink_name
+        if self._sink_bin is not None:
+            _element, current = _descend_to_sink(self._sink_bin)
+            if current:
+                name = current
+        return (f"sink={name} state={self.state_name} "
                 f"rate={SAMPLE_RATE} lifecycle=playing-then-null")
 
     def set_volume(self, volume: float) -> None:
